@@ -66,6 +66,7 @@ export default function DayDetail({ day, onClose, onSubmitted }: DayDetailProps)
   const info = STATUS_INFO[day.status] || STATUS_INFO.future;
   const isMissing = day.status === "missing" || day.status === "warning";
   const isSubmitted = day.status === "submitted" || day.status === "backfilled";
+  const isBackfilled = day.status === "backfilled";
 
   // ---- 只读模式 state ----
   const [loading, setLoading] = useState(false);
@@ -87,7 +88,7 @@ export default function DayDetail({ day, onClose, onSubmitted }: DayDetailProps)
       setLoading(true);
       setLoadError(null);
       try {
-        const data = await invoke<ReportContent>("fetch_report_content", { date: day.date });
+        const data = await invoke<ReportContent>("fetch_report_content", { date: day.date, isBackfilled });
         if (!cancelled) setReportContent(data);
       } catch (e) {
         if (!cancelled) setLoadError(`加载失败: ${e}`);
@@ -207,7 +208,7 @@ export default function DayDetail({ day, onClose, onSubmitted }: DayDetailProps)
                   onClick={() => {
                     setLoading(true);
                     setLoadError(null);
-                    invoke<ReportContent>("fetch_report_content", { date: day.date })
+                    invoke<ReportContent>("fetch_report_content", { date: day.date, isBackfilled })
                       .then((data) => setReportContent(data))
                       .catch((e) => setLoadError(`加载失败: ${e}`))
                       .finally(() => setLoading(false));

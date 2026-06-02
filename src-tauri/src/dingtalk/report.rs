@@ -6,6 +6,7 @@
 // ============================================================
 
 use crate::dingtalk::auth::TokenCache;
+use chrono::Datelike;
 
 /// 日志模板信息
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq)]
@@ -313,27 +314,91 @@ fn group_items_to_stats(items: &[ReportItem]) -> Vec<ReportStat> {
 
 /// 获取指定日期的日报详细内容
 ///
-/// 调用 report/list 接口查询单日数据，返回第一份日报的内容字段
+/// - `is_backfilled = false`：按 create_time 查当天范围，返回第一篇
+/// - `is_backfilled = true`：宽时间范围查询，按汇报日筛选，返回最新一篇
 pub async fn get_report_for_date(
     token: &TokenCache,
     user_id: &str,
     template_name: &str,
     date: &str, // 'YYYY-MM-DD'
+    is_backfilled: bool,
 ) -> Result<Option<ReportDetail>, String> {
-    // 将日期转换为毫秒时间戳范围（当天 00:00 ~ 23:59:59.999）
-    let start_ms = date_to_timestamp_ms(date, true)?;
-    let end_ms = date_to_timestamp_ms(date, false)?;
+    if !is_backfilled {
+        // 正常提交：按 create_time 当天范围查询，快且准
+        let start_ms = date_to_timestamp_ms(date, true)?;
+        let end_ms = date_to_timestamp_ms(date, false)?;
+        let reports = get_reports_raw(token, user_id, template_name, start_ms, end_ms).await?;
+        for item in &reports {
+            if let Some(detail) = extract_report_detail(item) {
+                return Ok(Some(detail));
+            }
+        }
+        return Ok(None);
+    }
 
-    let reports = get_reports_raw(token, user_id, template_name, start_ms, end_ms).await?;
+    // 补交：宽范围查询 + 按汇报日筛选
+    let now = chrono::Utc::now();
+    let target_date = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|e| format!("解析日期失败: {}", e))?;
 
-    // 找第一个匹配日期的报告并提取内容
-    for item in &reports {
-        if let Some(detail) = extract_report_detail(item) {
-            return Ok(Some(detail));
+    // start: 当月1号
+    let month_start = chrono::NaiveDate::from_ymd_opt(target_date.year(), target_date.month(), 1)
+        .ok_or("日期构造失败")?
+        .and_hms_opt(0, 0, 0)
+        .ok_or("时间构造失败")?;
+    let start_ms = month_start.and_utc().timestamp_millis();
+
+    // end: 按窗口规则
+    let today = now.date_naive();
+    let current_month = format!("{}-{:02}", today.year(), today.month());
+    let prev_year = today.year() - if today.month() == 1 { 1 } else { 0 };
+    let prev_month = if today.month() == 1 { 12 } else { today.month() - 1 };
+    let prev_month_str = format!("{}-{:02}", prev_year, prev_month);
+    let target_month_str = format!("{}-{:02}", target_date.year(), target_date.month());
+
+    let end_ms = if target_month_str == current_month || target_month_str == prev_month_str {
+        // 本月/上月 → 到现在
+        now.timestamp_millis()
+    } else {
+        // 更早 → 下月末
+        let next_month_year = target_date.year() + if target_date.month() == 12 { 1 } else { 0 };
+        let next_month_month = if target_date.month() == 12 { 1 } else { target_date.month() + 1 };
+        let end_of_next_month = chrono::NaiveDate::from_ymd_opt(next_month_year, next_month_month + 1, 1)
+            .or_else(|| chrono::NaiveDate::from_ymd_opt(next_month_year + 1, 1, 1))
+            .ok_or("日期构造失败")?;
+        end_of_next_month
+            .and_hms_opt(0, 0, 0)
+            .ok_or("时间构造失败")?
+            .and_utc()
+            .timestamp_millis() - 1
+    };
+
+    log::info!(
+        "补交查询 {}: start_ms={}, end_ms={}",
+        date, start_ms, end_ms
+    );
+
+    // 宽范围拉取全部原始数据（含分页），按汇报日筛选
+    let raw_data = get_reports_raw(token, user_id, template_name, start_ms, end_ms).await?;
+    let mut best_detail: Option<ReportDetail> = None;
+    let mut best_create_time: i64 = 0;
+
+    for item in &raw_data {
+        let create_time = item["create_time"].as_i64().unwrap_or(0);
+        let reporting_date = extract_reporting_date(item);
+        let item_date = reporting_date.unwrap_or_else(|| timestamp_ms_to_date(create_time));
+
+        if item_date == date {
+            if create_time > best_create_time {
+                if let Some(detail) = extract_report_detail(item) {
+                    best_detail = Some(detail);
+                    best_create_time = create_time;
+                }
+            }
         }
     }
 
-    Ok(None)
+    Ok(best_detail)
 }
 
 /// 获取模板详情（字段定义 + 默认接收人）
@@ -604,7 +669,7 @@ pub async fn update_report(
 // 内部辅助函数
 // ============================================================
 
-/// 获取原始日志列表数据（不聚合，用于提取内容）
+/// 获取原始日志列表数据（含分页，用于提取内容）
 async fn get_reports_raw(
     token: &TokenCache,
     user_id: &str,
@@ -618,39 +683,55 @@ async fn get_reports_raw(
         access_token
     );
 
-    let body = serde_json::json!({
-        "userid": user_id,
-        "template_name": template_name,
-        "start_time": start_time,
-        "end_time": end_time,
-        "cursor": 0,
-        "size": 5,
-    });
-
     let client = reqwest::Client::new();
-    let resp = client.post(&url).json(&body).send().await
-        .map_err(|e| format!("查询日志列表失败: {}", e))?;
+    let mut all_data: Vec<serde_json::Value> = Vec::new();
+    let mut cursor: i64 = 0;
 
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}", resp.status().as_u16()));
+    loop {
+        let body = serde_json::json!({
+            "userid": user_id,
+            "template_name": template_name,
+            "start_time": start_time,
+            "end_time": end_time,
+            "cursor": cursor,
+            "size": 100,
+        });
+
+        let resp = client.post(&url).json(&body).send().await
+            .map_err(|e| format!("查询日志列表失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}", resp.status().as_u16()));
+        }
+
+        let result: serde_json::Value = resp.json().await
+            .map_err(|e| format!("解析响应失败: {}", e))?;
+
+        let errcode = result["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            return Err(format!("API error {}", errcode));
+        }
+
+        let data_list = result
+            .get("result")
+            .and_then(|r| r.get("data_list"))
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        let item_count = data_list.len();
+        all_data.extend(data_list);
+
+        let has_more = result["result"]["has_more"].as_bool().unwrap_or(false);
+        let next_cursor = result["result"]["next_cursor"].as_i64().unwrap_or(0);
+
+        if !has_more { break; }
+        cursor = next_cursor;
+
+        log::info!("get_reports_raw 分页: cursor={cursor}, 本页 {item_count} 条");
     }
 
-    let result: serde_json::Value = resp.json().await
-        .map_err(|e| format!("解析响应失败: {}", e))?;
-
-    let errcode = result["errcode"].as_i64().unwrap_or(-1);
-    if errcode != 0 {
-        return Err(format!("API error {}", errcode));
-    }
-
-    let data_list = result
-        .get("result")
-        .and_then(|r| r.get("data_list"))
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    Ok(data_list)
+    Ok(all_data)
 }
 
 /// 从日报 contents 中提取"汇报日"（日报时间/Reporting Time 字段的值）

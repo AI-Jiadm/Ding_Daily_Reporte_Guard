@@ -11,8 +11,10 @@ use tauri::State;
 pub async fn fetch_report_content(
     state: State<'_, AppState>,
     date: String,
+    is_backfilled: Option<bool>, // 补交日期 → 用宽范围 + 汇报日筛选
 ) -> Result<serde_json::Value, String> {
-    log::info!("获取日报内容: {}", date);
+    let is_backfilled = is_backfilled.unwrap_or(false);
+    log::info!("获取日报内容: {} (补交={})", date, is_backfilled);
 
     let user_id = state
         .db
@@ -29,6 +31,7 @@ pub async fn fetch_report_content(
         &user_id,
         &template_name,
         &date,
+        is_backfilled,
     )
     .await?
     {
