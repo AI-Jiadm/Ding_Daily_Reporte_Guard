@@ -34,6 +34,7 @@ pub struct ContentField {
 /// 日报详情（含内容）
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReportDetail {
+    pub report_id: Option<String>,   // 日志 ID（更新时要用）
     pub create_time: i64,            // 提交时间 ms
     pub creator_name: String,
     pub template_name: String,
@@ -371,6 +372,41 @@ pub struct TemplateField {
     pub field_type: i32,
 }
 
+/// 根据模板字段定义，智能构建 contents 数组
+///
+/// - "工作内容" / "Working Content" → 填入 content 文本
+/// - "日报时间" / "Reporting Time" → 填入 biz_date
+/// - 其余文本字段 → 空字符串
+/// - 非文本字段 (type≠1) → 跳过
+fn build_field_contents(fields: &[TemplateField], content: &str, biz_date: &str) -> Vec<serde_json::Value> {
+    let truncated: String = content.chars().take(1000).collect();
+    fields
+        .iter()
+        .filter(|f| {
+            // 关键字段不限制类型，其余只保留文本类型 (type=1)
+            if f.name.contains("日报时间") || f.name.contains("Reporting Time") { return true; }
+            if f.name.contains("工作内容") || f.name.contains("Working Content") { return true; }
+            f.field_type == 1
+        })
+        .map(|f| {
+            let field_content = if f.name.contains("工作内容") || f.name.contains("Working Content") {
+                truncated.clone()
+            } else if f.name.contains("日报时间") || f.name.contains("Reporting Time") {
+                biz_date.to_string()
+            } else {
+                String::new()
+            };
+            serde_json::json!({
+                "key": f.name,
+                "content": field_content,
+                "sort": f.sort,
+                "type": f.field_type, // 使用字段原有类型，而非硬编码 1
+                "content_type": "markdown",
+            })
+        })
+        .collect()
+}
+
 /// 创建日报并提交到钉钉
 ///
 /// API: POST /topapi/report/create
@@ -397,35 +433,8 @@ pub async fn create_report(
         access_token
     );
 
-    // 截断到 1000 字符以内
-    let truncated: String = content.chars().take(1000).collect();
-
-    // 遍历所有字段，根据字段名智能填值
-    let mut contents_arr: Vec<serde_json::Value> = Vec::new();
-    for field in &fields {
-        if field.field_type != 1 {
-            // 跳过非文本类型字段（钉钉 API 只支持 type=1）
-            continue;
-        }
-        let field_content = if field.name.contains("日报时间") || field.name.contains("Reporting Time") {
-            // 日报时间字段 → 填 biz_date（如 "2026-06-02"）
-            biz_date.to_string()
-        } else if field.name.contains("工作内容") || field.name.contains("Working Content") {
-            // 工作内容字段 → 填用户输入的内容
-            truncated.clone()
-        } else {
-            // 其他字段 → 留空
-            String::new()
-        };
-
-        contents_arr.push(serde_json::json!({
-            "key": field.name,
-            "content": field_content,
-            "sort": field.sort,
-            "type": field.field_type,
-            "content_type": "markdown",
-        }));
-    }
+    // 构建字段内容（日报时间=biz_date，工作内容=content，其余留空）
+    let contents_arr = build_field_contents(&fields, content, biz_date);
     log::info!("创建日报 - 填充了 {} 个字段", contents_arr.len());
 
     // to_userids: 去重合并用户自己 + 模板默认接收人
@@ -483,6 +492,71 @@ pub async fn create_report(
     }
 
     log::info!("日报创建成功: {} {}", biz_date, user_id);
+    Ok(())
+}
+
+/// 更新已有日报内容
+///
+/// API: POST /topapi/report/savecontent
+pub async fn update_report(
+    token: &TokenCache,
+    template_id: &str,
+    template_name: &str,
+    user_id: &str,
+    report_id: &str,
+    biz_date: &str,
+    content: &str,
+) -> Result<(), String> {
+    let (fields, _receivers) = get_template_detail(token, user_id, template_name).await?;
+    if fields.is_empty() {
+        return Err("未找到模板字段定义".into());
+    }
+
+    // 构建字段内容（日报时间=biz_date，工作内容=content，其余留空）
+    let contents_arr = build_field_contents(&fields, content, biz_date);
+
+    let access_token = token.get_token().await?;
+    let url = format!(
+        "https://oapi.dingtalk.com/topapi/report/savecontent?access_token={}",
+        access_token
+    );
+
+    // savecontent 的 create_report_param: 和 create 一样 + report_id
+    let body = serde_json::json!({
+        "create_report_param": {
+            "template_id": template_id,
+            "userid": user_id,
+            "biz_date": biz_date,
+            "report_id": report_id,
+            "dd_from": "dailyreport-guard",
+            "contents": contents_arr,
+        }
+    });
+
+    log::info!("[update_report] URL: {}", url);
+    log::info!("[update_report] Body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("更新日报失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+
+    let resp_text = resp.text().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    log::info!("[update_report] Response: {}", &resp_text[..resp_text.len().min(500)]);
+
+    let result: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| format!("解析响应失败: {} — {}", e, &resp_text[..resp_text.len().min(200)]))?;
+
+    let errcode = result["errcode"].as_i64().unwrap_or(-1);
+    if errcode != 0 {
+        let errmsg = result["errmsg"].as_str().unwrap_or("未知错误");
+        return Err(format!("更新日报失败 (errcode={}): {}", errcode, errmsg));
+    }
+
+    log::info!("日报更新成功: {} {}", biz_date, user_id);
     Ok(())
 }
 
@@ -544,6 +618,7 @@ fn extract_report_detail(item: &serde_json::Value) -> Option<ReportDetail> {
     let create_time = item["create_time"].as_i64()?;
     let creator_name = item["creator_name"].as_str().unwrap_or("").to_string();
     let template_name = item["template_name"].as_str().unwrap_or("").to_string();
+    let report_id = item["report_id"].as_str().map(|s| s.to_string());
 
     let contents: Vec<ContentField> = item["contents"]
         .as_array()
@@ -560,6 +635,7 @@ fn extract_report_detail(item: &serde_json::Value) -> Option<ReportDetail> {
         .unwrap_or_default();
 
     Some(ReportDetail {
+        report_id,
         create_time,
         creator_name,
         template_name,
@@ -838,6 +914,87 @@ mod tests {
         assert_eq!(fields[0].name, "今日完成工作");
         assert_eq!(default_receivers.len(), 2);
         assert_eq!(default_receivers[0], "manager001");
+    }
+
+    #[test]
+    fn test_build_field_contents_date_type_field_not_filtered() {
+        // "日报时间" 在钉钉模板中可能是非文本类型（如 date 类型 type=3），
+        // 不应被 type==1 过滤掉
+        let fields = vec![
+            TemplateField { name: "日报时间(Reporting Time)".into(), sort: 0, field_type: 3 }, // date 类型
+            TemplateField { name: "工作内容(Working Content)".into(), sort: 1, field_type: 1 },
+            TemplateField { name: "备注( Comments)".into(), sort: 6, field_type: 1 },
+            TemplateField { name: "附件".into(), sort: 4, field_type: 2 }, // 图片，应跳过
+        ];
+        let biz_date = "2026-05-09";
+        let content = "补填测试";
+
+        let contents = build_field_contents(&fields, content, biz_date);
+
+        // 应有 3 个：日报时间(date) + 工作内容(text) + 备注(text)；附件(type=2) 应跳过
+        assert_eq!(contents.len(), 3);
+        let date_field = contents.iter().find(|c| c["key"] == "日报时间(Reporting Time)").unwrap();
+        assert_eq!(date_field["content"], "2026-05-09");
+        assert_eq!(date_field["type"], 3); // 保留原字段类型
+        let work_field = contents.iter().find(|c| c["key"] == "工作内容(Working Content)").unwrap();
+        assert_eq!(work_field["content"], "补填测试");
+        let remark_field = contents.iter().find(|c| c["key"] == "备注( Comments)").unwrap();
+        assert_eq!(remark_field["content"], "");
+    }
+
+    #[test]
+    fn test_build_field_contents_populates_correct_fields() {
+        let fields = vec![
+            TemplateField { name: "日报时间".into(), sort: 0, field_type: 1 },
+            TemplateField { name: "工作内容".into(), sort: 1, field_type: 1 },
+            TemplateField { name: "备注".into(), sort: 2, field_type: 1 },
+            TemplateField { name: "明日计划".into(), sort: 3, field_type: 1 },
+            TemplateField { name: "附件".into(), sort: 4, field_type: 2 }, // 非文本，应跳过
+        ];
+        let biz_date = "2026-05-09";
+        let content = "今天完成了功能开发";
+
+        let contents = build_field_contents(&fields, content, biz_date);
+
+        // 只应有 4 个文本字段（附件 type=2 被跳过）
+        assert_eq!(contents.len(), 4);
+
+        // "日报时间" 应填充 biz_date
+        let date_field = contents.iter().find(|c| c["key"] == "日报时间").unwrap();
+        assert_eq!(date_field["content"], "2026-05-09");
+
+        // "工作内容" 应填充 content
+        let work_field = contents.iter().find(|c| c["key"] == "工作内容").unwrap();
+        assert_eq!(work_field["content"], "今天完成了功能开发");
+
+        // "备注" 应为空
+        let remark_field = contents.iter().find(|c| c["key"] == "备注").unwrap();
+        assert_eq!(remark_field["content"], "");
+
+        // "明日计划" 应为空（无匹配规则）
+        let plan_field = contents.iter().find(|c| c["key"] == "明日计划").unwrap();
+        assert_eq!(plan_field["content"], "");
+    }
+
+    #[test]
+    fn test_build_field_contents_english_field_names() {
+        let fields = vec![
+            TemplateField { name: "Reporting Time".into(), sort: 0, field_type: 1 },
+            TemplateField { name: "Working Content".into(), sort: 1, field_type: 1 },
+            TemplateField { name: "Comments".into(), sort: 2, field_type: 1 },
+        ];
+        let biz_date = "2026-06-02";
+        let content = "Done with feature development";
+
+        let contents = build_field_contents(&fields, content, biz_date);
+
+        assert_eq!(contents.len(), 3);
+        let date_field = contents.iter().find(|c| c["key"] == "Reporting Time").unwrap();
+        assert_eq!(date_field["content"], "2026-06-02");
+        let work_field = contents.iter().find(|c| c["key"] == "Working Content").unwrap();
+        assert_eq!(work_field["content"], "Done with feature development");
+        let comment_field = contents.iter().find(|c| c["key"] == "Comments").unwrap();
+        assert_eq!(comment_field["content"], "");
     }
 
     #[test]

@@ -131,6 +131,32 @@ pub async fn fetch_templates(
         .collect())
 }
 
+/// 获取当前配置的模板字段列表
+#[tauri::command]
+pub async fn get_template_fields(
+    state: State<'_, AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    let user_id = state.db.get_config("user_id")?.ok_or("用户 ID 未配置")?;
+    let template_name = state
+        .db
+        .get_config("selected_template_name")?
+        .unwrap_or_else(|| "日报".to_string());
+
+    let (fields, _receivers) =
+        crate::dingtalk::report::get_template_detail(&state.token_cache, &user_id, &template_name).await?;
+
+    Ok(fields
+        .into_iter()
+        .map(|f| {
+            json!({
+                "name": f.name,
+                "sort": f.sort,
+                "type": f.field_type,
+            })
+        })
+        .collect())
+}
+
 /// 验证新凭据、保存配置、然后重启应用
 #[tauri::command]
 pub async fn save_settings_and_restart(

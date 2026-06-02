@@ -34,6 +34,7 @@ pub async fn fetch_report_content(
     {
         Some(detail) => Ok(json!({
             "found": true,
+            "reportId": detail.report_id,
             "createTime": detail.create_time,
             "creatorName": detail.creator_name,
             "templateName": detail.template_name,
@@ -49,14 +50,15 @@ pub async fn fetch_report_content(
     }
 }
 
-/// 提交（创建）日报
+/// 提交（创建或更新）日报
 #[tauri::command]
 pub async fn submit_report(
     state: State<'_, AppState>,
     date: String,       // 'YYYY-MM-DD'
     content: String,    // 工作内容
+    report_id: Option<String>, // 如果有则更新，否则新建
 ) -> Result<(), String> {
-    log::info!("提交日报: {} ({} 字)", date, content.chars().count());
+    log::info!("提交日报: {} ({} 字, update={})", date, content.chars().count(), report_id.is_some());
 
     let user_id = state
         .db
@@ -75,15 +77,30 @@ pub async fn submit_report(
         .get_config("selected_template_name")?
         .unwrap_or_else(|| "日报".to_string());
 
-    crate::dingtalk::report::create_report(
-        &state.token_cache,
-        &template_id,
-        &template_name,
-        &user_id,
-        &date,
-        &content,
-    )
-    .await
+    if let Some(rid) = report_id {
+        // 更新已有日报
+        crate::dingtalk::report::update_report(
+            &state.token_cache,
+            &template_id,
+            &template_name,
+            &user_id,
+            &rid,
+            &date,
+            &content,
+        )
+        .await
+    } else {
+        // 创建新日报
+        crate::dingtalk::report::create_report(
+            &state.token_cache,
+            &template_id,
+            &template_name,
+            &user_id,
+            &date,
+            &content,
+        )
+        .await
+    }
 }
 
 /// 获取指定月份的检查汇总（从数据库缓存读取）

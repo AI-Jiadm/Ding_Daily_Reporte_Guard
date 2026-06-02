@@ -84,6 +84,7 @@ pub fn run() {
             commands::config::load_config,
             commands::config::test_connection,
             commands::config::fetch_templates,
+            commands::config::get_template_fields,
             commands::config::save_settings_and_restart,
             commands::check::run_check,
             commands::check::get_current_status,
