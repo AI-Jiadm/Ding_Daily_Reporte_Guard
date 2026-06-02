@@ -1,6 +1,7 @@
 use crate::AppState;
 use serde_json::json;
 use tauri::State;
+use tauri::AppHandle;
 
 // ============================================================
 // 配置管理相关 Tauri Commands
@@ -53,11 +54,17 @@ pub async fn load_config(state: State<'_, AppState>) -> Result<serde_json::Value
         .and_then(|v| serde_json::from_str(&v).ok())
         .unwrap_or_default();
 
+    let selected_template_name = state
+        .db
+        .get_config("selected_template_name")?
+        .unwrap_or_default();
+
     Ok(json!({
         "appKey": state.db.get_config("app_key")?.unwrap_or_default(),
         "appSecret": state.db.get_config("app_secret")?.unwrap_or_default(),
         "userId": state.db.get_config("user_id")?.unwrap_or_default(),
         "selectedTemplateIds": selected_template_ids,
+        "selectedTemplateName": selected_template_name,
         "isConfigured": is_configured,
     }))
 }
@@ -122,4 +129,48 @@ pub async fn fetch_templates(
             })
         })
         .collect())
+}
+
+/// 验证新凭据、保存配置、然后重启应用
+#[tauri::command]
+pub async fn save_settings_and_restart(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    app_key: String,
+    app_secret: String,
+    user_id: String,
+    selected_template_id: String,
+    selected_template_name: String,
+) -> Result<(), String> {
+    // 1. 验证新凭据
+    log::info!("验证新凭据...");
+    let temp_cache = crate::dingtalk::auth::TokenCache::new();
+    temp_cache
+        .set_credentials(app_key.clone(), app_secret.clone())
+        .await;
+
+    match temp_cache.get_token().await {
+        Ok(_) => {
+            log::info!("凭据验证成功");
+        }
+        Err(e) => {
+            return Err(format!("凭据验证失败: {}", e));
+        }
+    }
+
+    // 2. 保存所有配置
+    state.db.set_config("app_key", &app_key)?;
+    state.db.set_config("app_secret", &app_secret)?;
+    state.db.set_config("user_id", &user_id)?;
+    state.db.set_config(
+        "selected_template_ids",
+        &serde_json::to_string(&[&selected_template_id]).unwrap_or_default(),
+    )?;
+    state.db.set_config("selected_template_name", &selected_template_name)?;
+    state.db.set_config("is_configured", "true")?;
+
+    log::info!("配置已更新，正在重启...");
+
+    // 3. 重启应用（AppHandle::restart 由 tauri-plugin-process 提供）
+    app.restart();
 }

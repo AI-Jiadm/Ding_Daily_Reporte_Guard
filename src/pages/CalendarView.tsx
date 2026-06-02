@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppState } from "../context/AppContext";
 import { invoke } from "@tauri-apps/api/core";
 import type { DayInfo, CheckSummary } from "../types";
 import Calendar from "../components/Calendar";
 import SummaryBar from "../components/SummaryBar";
+import SettingsModal from "../components/SettingsModal";
 
 // ============================================================
 // 日历视图主页面
@@ -11,6 +12,23 @@ import SummaryBar from "../components/SummaryBar";
 export default function CalendarView() {
   const { state, dispatch } = useAppState();
   const isFirstMount = useRef(true);
+  const [showSettings, setShowSettings] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+
+  // 加载模板名称（用于设置面板）
+  useEffect(() => {
+    async function loadTemplateName() {
+      try {
+        const config = await invoke<{
+          selectedTemplateName?: string;
+        }>("load_config");
+        if (config.selectedTemplateName) {
+          setTemplateName(config.selectedTemplateName);
+        }
+      } catch (_) {}
+    }
+    loadTemplateName();
+  }, []);
 
   // 启动时自动检查当前月
   useEffect(() => {
@@ -99,6 +117,13 @@ export default function CalendarView() {
         <div style={styles.headerLeft}>
           <h1 style={styles.title}>🛡️ 日报守卫</h1>
           <span style={styles.monthBadge}>{monthLabel}</span>
+          <button
+            style={styles.settingsBtn}
+            onClick={() => setShowSettings(true)}
+            title="设置"
+          >
+            ⚙️
+          </button>
         </div>
         <div style={styles.headerRight}>
           {/* 月份导航 */}
@@ -152,6 +177,15 @@ export default function CalendarView() {
           isChecking={state.isChecking}
         />
       )}
+
+      {/* 设置面板 */}
+      {showSettings && (
+        <SettingsModal
+          onClose={() => setShowSettings(false)}
+          config={state.config}
+          templateName={templateName}
+        />
+      )}
     </div>
   );
 }
@@ -180,6 +214,15 @@ const styles: Record<string, React.CSSProperties> = {
     gap: 12,
   },
   title: { fontSize: 22 },
+  settingsBtn: {
+    background: "none",
+    border: "1px solid #e8e8e8",
+    borderRadius: 8,
+    fontSize: 20,
+    cursor: "pointer",
+    padding: "4px 8px",
+    lineHeight: 1,
+  },
   monthBadge: {
     padding: "2px 10px",
     background: "#1677ff",

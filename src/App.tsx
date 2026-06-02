@@ -13,9 +13,9 @@ function AppInner() {
   useEffect(() => {
     async function loadSavedConfig() {
       try {
-        const config = await invoke<AppConfig & { isConfigured: boolean }>(
-          "load_config",
-        );
+        const config = await invoke<
+          AppConfig & { selectedTemplateName?: string }
+        >("load_config");
         if (config && config.isConfigured) {
           dispatch({
             type: "SET_CONFIG",
@@ -25,6 +25,7 @@ function AppInner() {
               userId: config.userId,
               selectedTemplateIds: config.selectedTemplateIds,
               isConfigured: config.isConfigured,
+              selectedTemplateName: config.selectedTemplateName,
             },
           });
         }

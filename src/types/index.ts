@@ -35,6 +35,7 @@ export interface AppConfig {
   appSecret: string;
   userId: string;
   selectedTemplateIds: string[];
+  selectedTemplateName?: string;
   isConfigured: boolean;
 }
 
