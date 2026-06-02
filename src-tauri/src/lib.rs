@@ -32,7 +32,7 @@ pub struct AppState {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     info!("日报守卫启动中...");
 
     tauri::Builder::default()
@@ -88,6 +88,8 @@ pub fn run() {
             commands::check::run_check,
             commands::check::get_current_status,
             commands::report::get_monthly_summary,
+            commands::report::fetch_report_content,
+            commands::report::submit_report,
         ])
         .run(tauri::generate_context!())
         .expect("启动日报守卫时出错");

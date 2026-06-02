@@ -24,6 +24,22 @@ pub struct ReportStat {
     pub report_ids: Vec<String>,
 }
 
+/// 日报内容字段
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ContentField {
+    pub key: String,   // 字段名，如 "工作内容"
+    pub value: String, // 字段内容
+}
+
+/// 日报详情（含内容）
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ReportDetail {
+    pub create_time: i64,            // 提交时间 ms
+    pub creator_name: String,
+    pub template_name: String,
+    pub contents: Vec<ContentField>,
+}
+
 // ============================================================
 // API 调用
 // ============================================================
@@ -254,6 +270,304 @@ fn parse_report_list_response(body: &serde_json::Value) -> Result<Vec<ReportStat
     Ok(stats)
 }
 
+/// 获取指定日期的日报详细内容
+///
+/// 调用 report/list 接口查询单日数据，返回第一份日报的内容字段
+pub async fn get_report_for_date(
+    token: &TokenCache,
+    user_id: &str,
+    template_name: &str,
+    date: &str, // 'YYYY-MM-DD'
+) -> Result<Option<ReportDetail>, String> {
+    // 将日期转换为毫秒时间戳范围（当天 00:00 ~ 23:59:59.999）
+    let start_ms = date_to_timestamp_ms(date, true)?;
+    let end_ms = date_to_timestamp_ms(date, false)?;
+
+    let reports = get_reports_raw(token, user_id, template_name, start_ms, end_ms).await?;
+
+    // 找第一个匹配日期的报告并提取内容
+    for item in &reports {
+        if let Some(detail) = extract_report_detail(item) {
+            return Ok(Some(detail));
+        }
+    }
+
+    Ok(None)
+}
+
+/// 获取模板详情（字段定义 + 默认接收人）
+///
+/// API: POST /topapi/report/template/getbyname
+pub async fn get_template_detail(
+    token: &TokenCache,
+    user_id: &str,
+    template_name: &str,
+) -> Result<(Vec<TemplateField>, Vec<String>), String> {
+    let access_token = token.get_token().await?;
+    let url = format!(
+        "https://oapi.dingtalk.com/topapi/report/template/getbyname?access_token={}",
+        access_token
+    );
+
+    let body = serde_json::json!({
+        "template_name": template_name,
+        "userid": user_id,
+    });
+
+    let client = reqwest::Client::new();
+    log::info!("[get_template_fields] URL: {}", url);
+    log::info!("[get_template_fields] Body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("获取模板详情失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+
+    let resp_text = resp.text().await
+        .map_err(|e| format!("读取响应失败: {}", e))?;
+    log::info!("[get_template_fields] Response: {}", &resp_text[..resp_text.len().min(500)]);
+
+    let result: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| format!("解析响应失败: {} — body: {}", e, &resp_text[..resp_text.len().min(200)]))?;
+
+    let errcode = result["errcode"].as_i64().unwrap_or(-1);
+    if errcode != 0 {
+        return Err(format!("API error {}: {}", errcode, result["errmsg"].as_str().unwrap_or("")));
+    }
+
+    let fields: Vec<TemplateField> = result["result"]["fields"]
+        .as_array()
+        .map(|arr| arr.iter()
+            .filter_map(|f| Some(TemplateField {
+                name: f["field_name"].as_str().unwrap_or("").to_string(),
+                sort: f["sort"].as_i64().unwrap_or(0) as i32,
+                field_type: f["type"].as_i64().unwrap_or(1) as i32,
+            }))
+            .collect()
+        )
+        .unwrap_or_default();
+
+    // 默认接收人
+    let default_receivers: Vec<String> = result["result"]["default_receivers"]
+        .as_array()
+        .map(|arr| arr.iter()
+            .filter_map(|r| r["userid"].as_str().map(|s| s.to_string()))
+            .collect()
+        )
+        .unwrap_or_default();
+
+    log::info!("模板 [{}] 有 {} 个字段, {} 个默认接收人",
+        template_name, fields.len(), default_receivers.len());
+    Ok((fields, default_receivers))
+}
+
+/// 模板字段定义
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TemplateField {
+    pub name: String,
+    pub sort: i32,
+    pub field_type: i32,
+}
+
+/// 创建日报并提交到钉钉
+///
+/// API: POST /topapi/report/create
+pub async fn create_report(
+    token: &TokenCache,
+    template_id: &str,
+    template_name: &str,
+    user_id: &str,
+    biz_date: &str,     // 'YYYY-MM-DD'
+    content: &str,       // 工作内容（支持 markdown，≤1000 字符）
+) -> Result<(), String> {
+    // 1. 先获取模板字段定义和默认接收人
+    let (fields, default_receivers) = get_template_detail(token, user_id, template_name).await?;
+    if fields.is_empty() {
+        return Err("未找到模板字段定义，请检查模板名称是否正确".into());
+    }
+
+    // 2. 找第一个文本类型的字段，用它作为填写目标
+    let target_field = fields.iter()
+        .find(|f| f.field_type == 1)
+        .or_else(|| fields.first())
+        .ok_or("模板中没有可用字段")?;
+
+    log::info!("创建日报 - 模板字段: {} (sort={}, type={}), 默认接收人: {:?}",
+        target_field.name, target_field.sort, target_field.field_type, default_receivers);
+
+    let access_token = token.get_token().await?;
+    let url = format!(
+        "https://oapi.dingtalk.com/topapi/report/create?access_token={}",
+        access_token
+    );
+
+    // 截断到 1000 字符以内
+    let truncated: String = content.chars().take(1000).collect();
+
+    // contents: [{key, content, sort, type, content_type}]
+    // 注意: 创建日志用 content（不是 value），content_type 必填
+    let contents_arr = vec![serde_json::json!({
+        "key": target_field.name,
+        "content": truncated,
+        "sort": target_field.sort,
+        "type": target_field.field_type,
+        "content_type": "markdown",
+    })];
+
+    // to_userids: 去重合并用户自己 + 模板默认接收人
+    let mut to_userids: Vec<&str> = vec![user_id];
+    for r in &default_receivers {
+        if r != user_id && !to_userids.contains(&r.as_str()) {
+            to_userids.push(r);
+        }
+    }
+
+    let body = serde_json::json!({
+        "create_report_param": {
+            "template_id": template_id,
+            "userid": user_id,
+            "biz_date": biz_date,
+            "contents": contents_arr,
+            "to_chat": false,
+            "to_userids": to_userids,
+            "dd_from": "dailyreport-guard",
+        }
+    });
+
+    // 打印完整请求信息
+    log::info!("[create_report] URL: {}", url);
+    log::info!("[create_report] template_id={}, user={}, date={}", template_id, user_id, biz_date);
+    log::info!("[create_report] Body: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("创建日报失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        log::error!("[create_report] HTTP {}: {}", status, text);
+        return Err(format!("创建日报接口返回 HTTP {}: {}", status, text));
+    }
+
+    let resp_text = resp.text().await
+        .map_err(|e| format!("读取创建日报响应失败: {}", e))?;
+    log::info!("[create_report] Response: {}", &resp_text[..resp_text.len().min(500)]);
+
+    let result: serde_json::Value = serde_json::from_str(&resp_text)
+        .map_err(|e| format!("解析创建日报响应失败: {} — body: {}", e, &resp_text[..resp_text.len().min(200)]))?;
+
+    let errcode = result["errcode"].as_i64().unwrap_or(-1);
+    if errcode != 0 {
+        let errmsg = result["errmsg"].as_str().unwrap_or("未知错误");
+        log::error!("[create_report] API error: errcode={}, errmsg={}", errcode, errmsg);
+        return Err(format!("创建日报失败 (errcode={}): {}", errcode, errmsg));
+    }
+
+    log::info!("日报创建成功: {} {}", biz_date, user_id);
+    Ok(())
+}
+
+// ============================================================
+// 内部辅助函数
+// ============================================================
+
+/// 获取原始日志列表数据（不聚合，用于提取内容）
+async fn get_reports_raw(
+    token: &TokenCache,
+    user_id: &str,
+    template_name: &str,
+    start_time: i64,
+    end_time: i64,
+) -> Result<Vec<serde_json::Value>, String> {
+    let access_token = token.get_token().await?;
+    let url = format!(
+        "https://oapi.dingtalk.com/topapi/report/list?access_token={}",
+        access_token
+    );
+
+    let body = serde_json::json!({
+        "userid": user_id,
+        "template_name": template_name,
+        "start_time": start_time,
+        "end_time": end_time,
+        "cursor": 0,
+        "size": 5,
+    });
+
+    let client = reqwest::Client::new();
+    let resp = client.post(&url).json(&body).send().await
+        .map_err(|e| format!("查询日志列表失败: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status().as_u16()));
+    }
+
+    let result: serde_json::Value = resp.json().await
+        .map_err(|e| format!("解析响应失败: {}", e))?;
+
+    let errcode = result["errcode"].as_i64().unwrap_or(-1);
+    if errcode != 0 {
+        return Err(format!("API error {}", errcode));
+    }
+
+    let data_list = result
+        .get("result")
+        .and_then(|r| r.get("data_list"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(data_list)
+}
+
+/// 从单条日志记录中提取 ReportDetail
+fn extract_report_detail(item: &serde_json::Value) -> Option<ReportDetail> {
+    let create_time = item["create_time"].as_i64()?;
+    let creator_name = item["creator_name"].as_str().unwrap_or("").to_string();
+    let template_name = item["template_name"].as_str().unwrap_or("").to_string();
+
+    let contents: Vec<ContentField> = item["contents"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| {
+                    Some(ContentField {
+                        key: c["key"].as_str().unwrap_or("").to_string(),
+                        value: c["value"].as_str().unwrap_or("").to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ReportDetail {
+        create_time,
+        creator_name,
+        template_name,
+        contents,
+    })
+}
+
+/// 日期字符串 → 当天起止毫秒时间戳
+fn date_to_timestamp_ms(date: &str, start_of_day: bool) -> Result<i64, String> {
+    let d = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|e| format!("解析日期失败: {}", e))?;
+    let dt = if start_of_day {
+        d.and_hms_opt(0, 0, 0)
+    } else {
+        d.and_hms_opt(23, 59, 59)
+    }
+    .ok_or("时间构造失败")?;
+    Ok(dt.and_utc().timestamp_millis())
+}
+
 // ============================================================
 // 工具函数
 // ============================================================
@@ -414,8 +728,113 @@ mod tests {
     #[test]
     fn test_timestamp_ms_to_date_invalid() {
         let date = timestamp_ms_to_date(0);
-        // 0 毫秒 = Unix epoch = 取决于时区，可能是 1970-01-01
-        // 我们不关心具体值，只要求不 panic
         assert!(!date.is_empty());
+    }
+
+    #[test]
+    fn test_extract_report_detail_with_contents() {
+        let item = json!({
+            "create_time": 1717200000000u64,
+            "creator_name": "测试",
+            "template_name": "日报",
+            "contents": [
+                { "key": "工作内容", "sort": "0", "type": "1", "value": "完成了功能开发" },
+                { "key": "明日计划", "sort": "1", "type": "1", "value": "继续优化" }
+            ]
+        });
+
+        let detail = extract_report_detail(&item).unwrap();
+        assert_eq!(detail.creator_name, "测试");
+        assert_eq!(detail.template_name, "日报");
+        assert_eq!(detail.contents.len(), 2);
+        assert_eq!(detail.contents[0].key, "工作内容");
+        assert_eq!(detail.contents[0].value, "完成了功能开发");
+        assert_eq!(detail.contents[1].key, "明日计划");
+    }
+
+    #[test]
+    fn test_extract_report_detail_no_contents() {
+        let item = json!({
+            "create_time": 1717200000000u64,
+            "creator_name": "测试",
+            "template_name": "日报"
+        });
+
+        let detail = extract_report_detail(&item).unwrap();
+        assert_eq!(detail.creator_name, "测试");
+        assert!(detail.contents.is_empty());
+    }
+
+    #[test]
+    fn test_create_report_body_format() {
+        // 验证 contents 为原生 JSON 数组格式
+        let contents_arr = vec![serde_json::json!({
+            "key": "今日完成工作",
+            "value": "今天完成了功能开发",
+            "sort": 0,
+            "type": 1,
+        })];
+
+        let body = serde_json::json!({
+            "create_report_param": {
+                "template_id": "abc123",
+                "userid": "user001",
+                "biz_date": "2026-06-02",
+                "contents": contents_arr
+            }
+        });
+
+        assert_eq!(body["create_report_param"]["template_id"], "abc123");
+        assert!(body["create_report_param"]["contents"].is_array());
+        let first = &body["create_report_param"]["contents"][0];
+        assert_eq!(first["key"], "今日完成工作");
+    }
+
+    #[test]
+    fn test_parse_template_detail() {
+        // 模拟 getbyname 响应（含默认接收人）
+        let result = json!({
+            "errcode": 0,
+            "result": {
+                "name": "日报",
+                "fields": [
+                    { "field_name": "今日完成工作", "type": 1, "sort": 0 },
+                    { "field_name": "未完成工作", "type": 1, "sort": 1 },
+                ],
+                "default_receivers": [
+                    { "userid": "manager001" },
+                    { "userid": "manager002" },
+                ]
+            }
+        });
+
+        let fields: Vec<TemplateField> = result["result"]["fields"]
+            .as_array().unwrap().iter()
+            .map(|f| TemplateField {
+                name: f["field_name"].as_str().unwrap().to_string(),
+                sort: f["sort"].as_i64().unwrap() as i32,
+                field_type: f["type"].as_i64().unwrap() as i32,
+            })
+            .collect();
+
+        let default_receivers: Vec<String> = result["result"]["default_receivers"]
+            .as_array().unwrap().iter()
+            .filter_map(|r| r["userid"].as_str().map(|s| s.to_string()))
+            .collect();
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "今日完成工作");
+        assert_eq!(default_receivers.len(), 2);
+        assert_eq!(default_receivers[0], "manager001");
+    }
+
+    #[test]
+    fn test_date_to_timestamp_ms() {
+        let start = date_to_timestamp_ms("2026-06-15", true).unwrap();
+        let end = date_to_timestamp_ms("2026-06-15", false).unwrap();
+        // end > start
+        assert!(end > start);
+        // diff should be ~24h in ms
+        assert_eq!(end - start, 23 * 3600 * 1000 + 59 * 60 * 1000 + 59 * 1000);
     }
 }

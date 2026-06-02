@@ -132,7 +132,7 @@ export default function CalendarView() {
       )}
 
       {/* === 日历卡片 === */}
-      <Calendar days={state.days} month={state.currentMonth} />
+      <Calendar days={state.days} month={state.currentMonth} onRefresh={handleCheck} />
 
       {/* === 底部汇总 === */}
       {state.summary && <SummaryBar summary={state.summary} isChecking={state.isChecking} />}

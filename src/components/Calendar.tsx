@@ -13,9 +13,10 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 interface CalendarProps {
   days: DayInfo[];
   month: string;
+  onRefresh?: () => void; // 日报提交后通知刷新
 }
 
-export default function Calendar({ days, month }: CalendarProps) {
+export default function Calendar({ days, month, onRefresh }: CalendarProps) {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
   const dayMap = useMemo(() => {
@@ -60,7 +61,7 @@ export default function Calendar({ days, month }: CalendarProps) {
           ),
         )}
       </div>
-      {selectedDay && <DayDetail day={selectedDay} onClose={() => setSelectedDate(null)} />}
+      {selectedDay && <DayDetail day={selectedDay} onClose={() => setSelectedDate(null)} onSubmitted={onRefresh} />}
     </>
   );
 }
