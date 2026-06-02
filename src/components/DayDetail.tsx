@@ -1,8 +1,7 @@
 import type { DayInfo } from "../types";
 
 // ============================================================
-// 日期详情弹窗
-// 点击日历格子后显示当天详情
+// 日期详情弹窗 — CC Switch 风格 modal
 // ============================================================
 
 interface DayDetailProps {
@@ -10,66 +9,76 @@ interface DayDetailProps {
   onClose: () => void;
 }
 
-const STATUS_TEXT: Record<string, string> = {
-  submitted: "已提交 ✅",
-  missing: "缺失 ❌ — 该工作日没有提交日报！",
-  warning: "待提交 ⚠️ — 今天还没写，快去提交！",
-  future: "未来日期",
-  non_workday: "非工作日",
+const STATUS_TEXT: Record<string, { title: string; desc: string; bg: string; fg: string }> = {
+  submitted: { title: "已提交", desc: "当日日报已提交", bg: "var(--color-success-light)", fg: "var(--color-success)" },
+  missing: { title: "缺失", desc: "该工作日未提交日报", bg: "var(--color-danger-light)", fg: "var(--color-danger)" },
+  warning: { title: "待提交", desc: "今天还没写，快去提交", bg: "var(--color-warning-light)", fg: "var(--color-warning)" },
+  future: { title: "未来日期", desc: "", bg: "var(--color-surface-secondary)", fg: "var(--color-text-tertiary)" },
+  non_workday: { title: "非工作日", desc: "", bg: "var(--color-surface-secondary)", fg: "var(--color-text-tertiary)" },
 };
 
 export default function DayDetail({ day, onClose }: DayDetailProps) {
-  const statusText = STATUS_TEXT[day.status] || day.status;
+  const info = STATUS_TEXT[day.status] || STATUS_TEXT.future;
 
-  // 格式化日期为中文
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr + "T00:00:00");
-    const weekdays = ["日", "一", "二", "三", "四", "五", "六"];
-    return `${dateStr} 周${weekdays[d.getDay()]}`;
+  const fmtDate = (ds: string) => {
+    const d = new Date(ds + "T00:00:00");
+    const w = ["日", "一", "二", "三", "四", "五", "六"];
+    return `${ds} 星期${w[d.getDay()]}`;
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <div style={styles.header}>
-          <h3 style={styles.date}>{formatDate(day.date)}</h3>
-          <button style={styles.closeBtn} onClick={onClose}>
-            ✕
+    <div style={st.overlay} onClick={onClose}>
+      <div style={st.modal} onClick={(e) => e.stopPropagation()}>
+        {/* 标题 */}
+        <div style={st.header}>
+          <span style={st.date}>{fmtDate(day.date)}</span>
+          <button style={st.close} onClick={onClose}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
           </button>
         </div>
 
-        <div
-          style={{
-            ...styles.statusBadge,
-            ...(day.status === "missing" ? styles.statusMissing : {}),
-            ...(day.status === "warning" ? styles.statusWarning : {}),
-            ...(day.status === "submitted" ? styles.statusSubmitted : {}),
-          }}
-        >
-          {statusText}
+        {/* 状态标签 */}
+        <div style={{ ...st.badge, background: info.bg, color: info.fg }}>
+          {info.title}
         </div>
 
-        <div style={styles.details}>
-          {day.isWorkday ? (
-            <>
-              <p>📋 工作日类型: 法定工作日</p>
-              <p>📝 提交状态: {day.hasReport ? "已提交" : "未提交"}</p>
-              {day.templateName && <p>📄 模板: {day.templateName}</p>}
-            </>
-          ) : (
-            <p>🔒 非工作日</p>
+        {/* 详情 */}
+        <div style={st.details}>
+          <div style={st.row}>
+            <span style={st.label}>状态</span>
+            <span>{info.title}</span>
+          </div>
+          {day.isWorkday && !day.hasReport && day.status !== "future" && day.status !== "non_workday" && (
+            <div style={st.row}>
+              <span style={st.label}>提交</span>
+              <span>未提交</span>
+            </div>
+          )}
+          {day.hasReport && (
+            <div style={st.row}>
+              <span style={st.label}>提交</span>
+              <span style={{ color: "var(--color-success)" }}>已提交</span>
+            </div>
+          )}
+          {day.templateName && (
+            <div style={st.row}>
+              <span style={st.label}>模板</span>
+              <span>{day.templateName}</span>
+            </div>
           )}
         </div>
 
-        {/* 每日小贴士 */}
+        {/* 提示 */}
         {day.status === "missing" && (
-          <div style={styles.tip}>
-            💡 提示：钉钉日志支持补交。你可以去钉钉补交当天的日报，补交后下次检查会自动更新状态。
+          <div style={{ ...st.tip, background: "var(--color-danger-light)", color: "var(--color-danger)" }}>
+            钉钉日志支持补交，补交后下次检查自动更新状态
           </div>
         )}
         {day.status === "warning" && (
-          <div style={{ ...styles.tip, background: "#fff7e6", color: "#fa8c16" }}>
-            ⏰ 提醒：建议在 17:30 前完成今天日报，避免忘记！
+          <div style={{ ...st.tip, background: "var(--color-warning-light)", color: "var(--color-warning)" }}>
+            建议在 17:30 前完成今天日报，避免忘记
           </div>
         )}
       </div>
@@ -77,75 +86,50 @@ export default function DayDetail({ day, onClose }: DayDetailProps) {
   );
 }
 
-// ============================================================
-// 内联样式
-// ============================================================
-const styles: Record<string, React.CSSProperties> = {
+const st: Record<string, React.CSSProperties> = {
   overlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.3)",
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
+    position: "fixed", inset: 0,
+    background: "rgba(0,0,0,0.25)",
+    backdropFilter: "blur(4px)",
+    display: "flex", justifyContent: "center", alignItems: "center",
     zIndex: 1000,
   },
   modal: {
-    background: "#fff",
-    borderRadius: 12,
+    background: "var(--color-surface)",
+    borderRadius: "var(--radius-xl)",
     padding: 24,
-    maxWidth: 380,
-    width: "90%",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+    maxWidth: 360, width: "88%",
+    boxShadow: "var(--shadow-lg)",
+    animation: "fadeIn 200ms ease",
   },
   header: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    marginBottom: 14,
+  },
+  date: { fontSize: 16, fontWeight: 600, color: "var(--color-text)" },
+  close: {
+    background: "none", color: "var(--color-text-tertiary)",
+    cursor: "pointer", padding: 2, display: "flex",
+  },
+  badge: {
+    display: "inline-block",
+    padding: "6px 14px",
+    borderRadius: "var(--radius-sm)",
+    fontSize: 13, fontWeight: 600,
     marginBottom: 16,
-  },
-  date: { fontSize: 18, fontWeight: 600 },
-  closeBtn: {
-    background: "none",
-    border: "none",
-    fontSize: 18,
-    cursor: "pointer",
-    color: "#999",
-  },
-  statusBadge: {
-    padding: "10px 16px",
-    borderRadius: 8,
-    marginBottom: 16,
-    fontSize: 14,
-    fontWeight: 500,
-  },
-  statusMissing: {
-    background: "#fff2f0",
-    color: "#ff4d4f",
-    border: "1px solid #ffccc7",
-  },
-  statusWarning: {
-    background: "#fff7e6",
-    color: "#fa8c16",
-    border: "1px solid #ffd591",
-  },
-  statusSubmitted: {
-    background: "#f6ffed",
-    color: "#52c41a",
-    border: "1px solid #b7eb8f",
   },
   details: {
-    fontSize: 14,
-    lineHeight: 2,
-    color: "#555",
-    marginBottom: 16,
+    display: "flex", flexDirection: "column", gap: 8,
+    marginBottom: 16, fontSize: 14,
   },
+  row: {
+    display: "flex", justifyContent: "space-between",
+    padding: "6px 0",
+    borderBottom: "1px solid var(--color-separator)",
+  },
+  label: { color: "var(--color-text-secondary)", fontWeight: 500 },
   tip: {
-    padding: "10px 14px",
-    background: "#fff2f0",
-    color: "#ff4d4f",
-    borderRadius: 8,
-    fontSize: 13,
-    lineHeight: 1.6,
+    padding: "10px 14px", borderRadius: "var(--radius-sm)",
+    fontSize: 12, lineHeight: 1.6,
   },
 };
