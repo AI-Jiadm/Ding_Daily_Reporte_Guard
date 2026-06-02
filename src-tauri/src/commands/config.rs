@@ -1,4 +1,6 @@
 use crate::AppState;
+use crate::holiday;
+use chrono::Datelike;
 use serde_json::json;
 use tauri::State;
 use tauri::AppHandle;
@@ -199,4 +201,79 @@ pub async fn save_settings_and_restart(
 
     // 3. 重启应用（AppHandle::restart 由 tauri-plugin-process 提供）
     app.restart();
+}
+
+// ============================================================
+// 节假日同步 Commands
+// ============================================================
+
+/// 手动同步指定年份的节假日数据
+#[tauri::command]
+pub async fn sync_holidays(
+    state: State<'_, AppState>,
+    year: Option<i32>,
+) -> Result<serde_json::Value, String> {
+    let target_year = year.unwrap_or_else(|| chrono::Local::now().year());
+    log::info!("手动同步 {} 年节假日数据...", target_year);
+
+    // 直接拉取（不走缓存），强制刷新
+    let data = holiday::fetch_holiday_data(target_year).await?;
+
+    let count = data.workday_overrides.len();
+    if count == 0 {
+        return Ok(json!({
+            "success": false,
+            "message": "同步失败：所有数据源均不可用，已降级为周一至周五模式。请检查网络连接。",
+            "count": 0,
+            "year": target_year,
+        }));
+    }
+
+    // 写入缓存
+    let cache_entries: Vec<(String, bool, String)> = data
+        .workday_overrides
+        .iter()
+        .map(|(date, &is_workday)| {
+            (date.clone(), !is_workday, String::new())
+        })
+        .collect();
+
+    state.db.save_holiday_cache(&cache_entries)
+        .map_err(|e| format!("保存缓存失败: {}", e))?;
+
+    log::info!("同步完成：{} 条特殊日期已缓存", count);
+    Ok(json!({
+        "success": true,
+        "message": format!("成功同步 {} 年节假日数据，共 {} 条特殊日期", target_year, count),
+        "count": count,
+        "year": target_year,
+    }))
+}
+
+/// 获取缓存中的节假日列表
+#[tauri::command]
+pub async fn get_holiday_list(
+    state: State<'_, AppState>,
+    year: Option<i32>,
+) -> Result<serde_json::Value, String> {
+    let target_year = year.unwrap_or_else(|| chrono::Local::now().year());
+    let entries = state.db.get_holiday_cache(target_year)?;
+
+    let items: Vec<serde_json::Value> = entries
+        .into_iter()
+        .map(|(date, is_holiday, name)| {
+            json!({
+                "date": date,
+                "isHoliday": is_holiday,
+                "type": if is_holiday { "放假" } else { "补班" },
+                "name": name,
+            })
+        })
+        .collect();
+
+    Ok(json!({
+        "year": target_year,
+        "count": items.len(),
+        "items": items,
+    }))
 }

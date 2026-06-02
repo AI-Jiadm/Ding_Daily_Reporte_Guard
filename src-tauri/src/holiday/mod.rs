@@ -14,7 +14,7 @@ pub struct HolidayData {
     /// 日期 → 是否为工作日
     /// 仅存储「特殊日期」（节假日和调休补班），
     /// 未收录的日期按周一至周五常规判断
-    workday_overrides: HashMap<String, bool>,
+    pub(crate) workday_overrides: HashMap<String, bool>,
     /// 数据年份
     pub year: i32,
 }
@@ -98,74 +98,116 @@ struct HolidayCnResponse {
 /// isOffDay = true  → 法定放假（不是工作日）
 /// isOffDay = false → 调休补班（是工作日）
 pub async fn fetch_holiday_data(year: i32) -> Result<HolidayData, String> {
-    let url = format!(
-        "https://raw.githubusercontent.com/NateScarlet/holiday-cn/refs/heads/master/{}.json",
-        year
-    );
-
-    log::info!("正在从 holiday-cn 拉取 {} 年节假日数据...", year);
+    // 两个数据源：GitHub raw（主） + jsDelivr CDN（国内兜底）
+    let urls: [&str; 2] = [
+        &format!("https://raw.githubusercontent.com/NateScarlet/holiday-cn/refs/heads/master/{}.json", year),
+        &format!("https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{}.json", year),
+    ];
 
     let client = reqwest::Client::new();
-    let resp = match client
-        .get(&url)
-        .header("User-Agent", "DailyReportGuard/0.1")
-        .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            log::warn!("获取节假日数据失败（网络错误）: {}，降级为周一至周五", e);
-            return Ok(HolidayData::fallback(year));
-        }
-    };
 
-    // 检查 HTTP 状态码
-    if !resp.status().is_success() {
-        log::warn!(
-            "节假日 API 返回 HTTP {}，降级为周一至周五",
-            resp.status().as_u16()
+    for (i, url) in urls.iter().enumerate() {
+        let source = if i == 0 { "GitHub" } else { "jsDelivr CDN" };
+        log::info!("正在从 {} 拉取 {} 年节假日数据...", source, year);
+
+        let resp = match client
+            .get(*url)
+            .header("User-Agent", "DailyReportGuard/0.1")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                log::warn!("{} 获取节假日数据失败: {}", source, e);
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            log::warn!("{} 返回 HTTP {}", source, resp.status().as_u16());
+            continue;
+        }
+
+        let text = match resp.text().await {
+            Ok(t) => t,
+            Err(e) => {
+                log::warn!("{} 读取响应失败: {}", source, e);
+                continue;
+            }
+        };
+
+        let parsed: HolidayCnResponse = match serde_json::from_str(&text) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!(
+                    "{} 解析 JSON 失败: {}。前 200 字符: {}",
+                    source, e,
+                    &text[..text.len().min(200)]
+                );
+                continue;
+            }
+        };
+
+        let holiday_data = HolidayData::from_holiday_cn(year, &parsed.days);
+        log::info!(
+            "已从 {} 加载 {} 年节假日数据，共 {} 条特殊日期",
+            source, year,
+            holiday_data.workday_overrides.len()
         );
-        return Ok(HolidayData::fallback(year));
+        return Ok(holiday_data);
     }
 
-    // 获取响应文本（不直接解析 JSON，避免 reqwest 自动解析失败）
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            log::warn!("读取节假日响应失败: {}，降级为周一至周五", e);
-            return Ok(HolidayData::fallback(year));
-        }
-    };
-
-    // 解析 JSON
-    let parsed: HolidayCnResponse = match serde_json::from_str(&text) {
-        Ok(p) => p,
-        Err(e) => {
-            log::warn!(
-                "解析节假日 JSON 失败: {}。前 200 字符: {}，降级为周一至周五",
-                e,
-                &text[..text.len().min(200)]
-            );
-            return Ok(HolidayData::fallback(year));
-        }
-    };
-
-    let holiday_data = HolidayData::from_holiday_cn(year, &parsed.days);
-    log::info!(
-        "已加载 {} 年节假日数据，共 {} 条特殊日期",
-        year,
-        holiday_data.workday_overrides.len()
-    );
-    Ok(holiday_data)
+    // 两个源都失败 → 降级为周一至周五
+    log::warn!("所有节假日数据源均不可用，降级为周一至周五");
+    Ok(HolidayData::fallback(year))
 }
 
-/// 获取指定年份的缓存或有数据。优先缓存，失败时自动拉取。
+/// 获取指定年份的节假日数据（缓存优先）
+///
+/// 流程：读 DB 缓存 → 有数据直接返回 → 无数据则拉取 API → 成功则写缓存 → 返回
 pub async fn get_or_fetch_holiday_data(
+    db: &crate::db::Database,
     year: i32,
 ) -> Result<HolidayData, String> {
-    // 直接拉取（缓存优化可以后续加）
-    fetch_holiday_data(year).await
+    // 1. 先读缓存
+    match db.get_holiday_cache(year) {
+        Ok(cache_entries) if !cache_entries.is_empty() => {
+            log::info!("从缓存加载 {} 年节假日数据，共 {} 条", year, cache_entries.len());
+            let mut workday_overrides = std::collections::HashMap::new();
+            for (date, is_holiday, _name) in &cache_entries {
+                // is_holiday=true → 是假期 → 不是工作日
+                // is_holiday=false → 是补班 → 是工作日
+                workday_overrides.insert(date.clone(), !is_holiday);
+            }
+            return Ok(HolidayData { workday_overrides, year });
+        }
+        Ok(_) => log::info!("{} 年节假日缓存为空，拉取 API...", year),
+        Err(e) => log::warn!("读取节假日缓存失败: {}", e),
+    }
+
+    // 2. 拉取 API（GitHub → jsDelivr CDN → 降级）
+    let data = fetch_holiday_data(year).await?;
+
+    // 3. 写入缓存（非降级数据才写）
+    if !data.workday_overrides.is_empty() {
+        let cache_entries: Vec<(String, bool, String)> = data
+            .workday_overrides
+            .iter()
+            .map(|(date, &is_workday)| {
+                // is_workday=true ↔ isOffDay=false ↔ is_holiday=false
+                // is_workday=false ↔ isOffDay=true ↔ is_holiday=true
+                (date.clone(), !is_workday, String::new())
+            })
+            .collect();
+        if let Err(e) = db.save_holiday_cache(&cache_entries) {
+            log::warn!("保存节假日缓存失败: {}", e);
+        } else {
+            log::info!("已缓存 {} 条 {} 年节假日数据", cache_entries.len(), year);
+        }
+    }
+
+    Ok(data)
 }
 
 // ============================================================

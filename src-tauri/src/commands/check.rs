@@ -57,7 +57,7 @@ pub async fn run_check(
         .and_then(|y| y.parse::<i32>().ok())
         .unwrap_or_else(|| Local::now().year());
 
-    let holiday_data = holiday::fetch_holiday_data(target_year).await?;
+    let holiday_data = holiday::get_or_fetch_holiday_data(&state.db, target_year).await?;
 
     // 执行检查
     let (day_results, summary) = checker::run_full_check(
