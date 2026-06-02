@@ -1,0 +1,16 @@
+# Node
+node_modules/
+dist/
+
+# Rust
+src-tauri/target/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
