@@ -60,16 +60,6 @@ export default function CalendarView() {
     })();
   }, [state.currentMonth]);
 
-  const handleSyncHolidays = async () => {
-    setHolidayMsg(null);
-    try {
-      const result = await invoke<{ success: boolean; message: string; count: number }>("sync_holidays", {});
-      setHolidayMsg({ text: result.message, ok: result.success });
-    } catch (e) {
-      setHolidayMsg({ text: `同步失败: ${e}`, ok: false });
-    }
-  };
-
   const handleViewHolidays = async () => {
     try {
       const data = await invoke<{ year: number; count: number; items: { date: string; type: string; name: string }[] }>("get_holiday_list", {});
@@ -134,12 +124,6 @@ export default function CalendarView() {
             </span>
           </button>
 
-          <button style={{ ...s.toolBtn, background: "var(--color-surface-secondary)", color: "var(--color-text)" }}
-            onClick={handleSyncHolidays} title="同步节假日">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            <span style={{ fontWeight: 500 }}>同步节假日</span>
-          </button>
-
           <button style={{ ...s.navBtn, width: 30, height: 30 }} onClick={handleViewHolidays} title="查看节假日">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
           </button>
@@ -200,14 +184,33 @@ export default function CalendarView() {
               <span style={{ fontSize: 16, fontWeight: 600, color: "var(--color-text)" }}>
                 {holidayList.year} 年节假日（{holidayList.count} 条）
               </span>
-              <button style={{ background: "none", color: "var(--color-text-tertiary)", cursor: "pointer", padding: 2, display: "flex" }}
-                onClick={() => setShowHolidayList(false)}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <button style={{
+                  padding: "4px 12px", fontSize: 12, fontWeight: 500,
+                  background: "var(--color-primary)", color: "#fff",
+                  borderRadius: "var(--radius-sm)", cursor: "pointer",
+                }} onClick={async () => {
+                  try {
+                    const result = await invoke<{ success: boolean; message: string; count: number }>("sync_holidays", {});
+                    setHolidayMsg({ text: result.message, ok: result.success });
+                    // 同步后自动刷新列表
+                    if (result.success) {
+                      const data = await invoke<{ year: number; count: number; items: { date: string; type: string; name: string }[] }>("get_holiday_list", {});
+                      setHolidayList(data);
+                    }
+                  } catch (e) {
+                    setHolidayMsg({ text: `同步失败: ${e}`, ok: false });
+                  }
+                }}>同步</button>
+                <button style={{ background: "none", color: "var(--color-text-tertiary)", cursor: "pointer", padding: 2, display: "flex" }}
+                  onClick={() => setShowHolidayList(false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </div>
             </div>
             {holidayList.count === 0 ? (
               <p style={{ color: "var(--color-text-secondary)", fontSize: 13, textAlign: "center", padding: 16 }}>
-                暂无缓存数据，请先同步节假日
+                暂无缓存数据，请点击「同步」按钮拉取节假日数据
               </p>
             ) : (
               <div style={{ maxHeight: "50vh", overflow: "auto" }}>
