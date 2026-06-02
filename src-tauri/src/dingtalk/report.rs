@@ -388,14 +388,8 @@ pub async fn create_report(
         return Err("未找到模板字段定义，请检查模板名称是否正确".into());
     }
 
-    // 2. 找第一个文本类型的字段，用它作为填写目标
-    let target_field = fields.iter()
-        .find(|f| f.field_type == 1)
-        .or_else(|| fields.first())
-        .ok_or("模板中没有可用字段")?;
-
-    log::info!("创建日报 - 模板字段: {} (sort={}, type={}), 默认接收人: {:?}",
-        target_field.name, target_field.sort, target_field.field_type, default_receivers);
+    // 2. 遍历模板所有字段，根据字段名智能填充内容
+    log::info!("创建日报 - 模板有 {} 个字段, 默认接收人: {:?}", fields.len(), default_receivers);
 
     let access_token = token.get_token().await?;
     let url = format!(
@@ -406,15 +400,33 @@ pub async fn create_report(
     // 截断到 1000 字符以内
     let truncated: String = content.chars().take(1000).collect();
 
-    // contents: [{key, content, sort, type, content_type}]
-    // 注意: 创建日志用 content（不是 value），content_type 必填
-    let contents_arr = vec![serde_json::json!({
-        "key": target_field.name,
-        "content": truncated,
-        "sort": target_field.sort,
-        "type": target_field.field_type,
-        "content_type": "markdown",
-    })];
+    // 遍历所有字段，根据字段名智能填值
+    let mut contents_arr: Vec<serde_json::Value> = Vec::new();
+    for field in &fields {
+        if field.field_type != 1 {
+            // 跳过非文本类型字段（钉钉 API 只支持 type=1）
+            continue;
+        }
+        let field_content = if field.name.contains("日报时间") || field.name.contains("Reporting Time") {
+            // 日报时间字段 → 填 biz_date（如 "2026-06-02"）
+            biz_date.to_string()
+        } else if field.name.contains("工作内容") || field.name.contains("Working Content") {
+            // 工作内容字段 → 填用户输入的内容
+            truncated.clone()
+        } else {
+            // 其他字段 → 留空
+            String::new()
+        };
+
+        contents_arr.push(serde_json::json!({
+            "key": field.name,
+            "content": field_content,
+            "sort": field.sort,
+            "type": field.field_type,
+            "content_type": "markdown",
+        }));
+    }
+    log::info!("创建日报 - 填充了 {} 个字段", contents_arr.len());
 
     // to_userids: 去重合并用户自己 + 模板默认接收人
     let mut to_userids: Vec<&str> = vec![user_id];
