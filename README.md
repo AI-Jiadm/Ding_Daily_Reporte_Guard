@@ -200,6 +200,51 @@ macOS: `~/Library/Application Support/com.dailyreport.guard/dailyreport.db`
 
 > **注意**: 通知功能（`dingtalk/notify.rs` + `scheduler.rs`）框架已搭建，但调度器尚未接入通知发送。当前检查结果仅在界面上展示。
 
+## 法定节假日数据
+
+### 数据源
+
+[NateScarlet/holiday-cn](https://github.com/NateScarlet/holiday-cn) — GitHub 开源项目，CI 每日自动更新国务院发布的节假日安排。
+
+### 获取方式
+
+```bash
+# 直接拉取某年的节假日 JSON
+curl https://raw.githubusercontent.com/NateScarlet/holiday-cn/refs/heads/master/2026.json
+```
+
+### 数据格式
+
+```json
+{
+  "year": 2026,
+  "days": [
+    { "name": "元旦",       "date": "2026-01-01", "isOffDay": true  },
+    { "name": "春节",       "date": "2026-02-17", "isOffDay": true  },
+    { "name": "春节补班",   "date": "2026-02-14", "isOffDay": false }
+  ]
+}
+```
+
+| 字段 | 含义 |
+|------|------|
+| `isOffDay: true` | 法定休息日（放假），**不是**工作日 |
+| `isOffDay: false` | 调休补班日（周末上班），**是**工作日 |
+| 未收录的日期 | 按周一至周五常规判断（周一到五 = 工作日） |
+
+### 降级策略
+
+如果 GitHub raw 不可达（网络不通 / 限流），自动降级为**周一至周五 = 工作日**的简单判断，不阻断正常使用。
+
+### 代码位置
+
+- `src-tauri/src/holiday/mod.rs` — API 拉取 + 解析 + 降级逻辑 + 单元测试
+- `src-tauri/src/engine/workday.rs` — 工作日判定函数
+
+### 每年更新
+
+holiday-cn 项目会在国务院发布下一年节假日安排后自动更新。应用会在每年第一次检查时自动拉取新年数据。如果 GitHub raw 不可达，使用降级模式。无需手动更新。
+
 ## 图标更新
 
 修改 `日志.svg` 后，重新生成所有尺寸：
