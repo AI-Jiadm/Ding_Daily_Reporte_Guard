@@ -2,7 +2,7 @@
 // 检查引擎：对比工作日列表与已提交记录，找出缺失日期
 // ============================================================
 
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, Local, NaiveDate, Utc};
 use crate::dingtalk::auth::TokenCache;
 use crate::dingtalk::report::{self, ReportStat};
 use crate::holiday::HolidayData;
@@ -52,8 +52,27 @@ pub async fn run_full_check(
     // 1. 获取本月所有工作日
     let workdays = workday::get_month_workdays(month, holiday_data);
 
-    // 2. 计算 API 时间范围：当月 1 日 00:00:00.000 到月末 23:59:59.999（毫秒时间戳）
-    let (start_ms, end_ms) = month_timestamps_ms(month)?;
+    // 2. 计算 API 时间范围
+    //    start: 当月 1 日 00:00:00.000
+    //    end:   本月/上月 → 当前时刻（跨月补填能被查到）
+    //           更早月份 → 月末 23:59:59.999
+    let (start_ms, month_end_ms) = month_timestamps_ms(month)?;
+    let end_ms = {
+        let current_month = format!("{}-{:02}", today.year(), today.month());
+        let prev_year = today.year() - if today.month() == 1 { 1 } else { 0 };
+        let prev_month = if today.month() == 1 { 12 } else { today.month() - 1 };
+        let prev_month_str = format!("{}-{:02}", prev_year, prev_month);
+        if month == current_month || month == prev_month_str {
+            Utc::now().timestamp_millis()
+        } else {
+            month_end_ms
+        }
+    };
+    log::info!(
+        "检查 {}: start_ms={}, end_ms={} ({})",
+        month, start_ms, end_ms,
+        if end_ms == month_end_ms { "月末" } else { "现在" }
+    );
 
     // 3. 调用钉钉日志列表 API（重试 3 次）
     let stats = call_reports_with_retry(
@@ -61,12 +80,13 @@ pub async fn run_full_check(
     )
     .await?;
 
-    // 4. 构建已提交日期集合
-    let submitted_dates: std::collections::HashSet<String> = stats
-        .iter()
-        .filter(|s| s.has_report)
-        .map(|s| s.stat_date.clone())
-        .collect();
+    // 4. 构建 已提交/补交 映射
+    use std::collections::HashMap;
+    let mut date_info: HashMap<String, (bool, bool)> = HashMap::new();
+    // date → (has_report, is_backfilled)
+    for s in &stats {
+        date_info.insert(s.stat_date.clone(), (s.has_report, s.is_backfilled));
+    }
 
     // 5. 遍历所有工作日，生成每日状态
     let mut results = Vec::new();
@@ -75,9 +95,15 @@ pub async fn run_full_check(
 
     for day in &workdays {
         let date_str = day.format("%Y-%m-%d").to_string();
-        let has_report = submitted_dates.contains(&date_str);
+        let (has_report, is_backfilled) = date_info
+            .get(&date_str)
+            .map(|(h, b)| (*h, *b))
+            .unwrap_or((false, false));
 
-        let status = if has_report {
+        let status = if has_report && is_backfilled {
+            submitted_count += 1;
+            "backfilled"
+        } else if has_report {
             submitted_count += 1;
             "submitted"
         } else if workday::is_future(*day, today) {

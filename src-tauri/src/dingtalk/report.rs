@@ -15,13 +15,21 @@ pub struct Template {
     pub icon: Option<String>,
 }
 
-/// 日志提交记录
+/// 日志提交记录（按汇报日聚合）
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ReportStat {
-    pub stat_date: String,       // 'YYYY-MM-DD'（提交时间对应的日期）
+    pub stat_date: String,       // 'YYYY-MM-DD'（汇报日）
     pub has_report: bool,
     pub report_count: i32,
     pub report_ids: Vec<String>,
+    pub is_backfilled: bool,     // 全部日报的提交日 ≠ 汇报日
+}
+
+/// 单条日报的日期信息（用于检查引擎判定补交）
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ReportItem {
+    pub report_date: String,   // 汇报日（从"日报时间"字段提取）
+    pub submit_date: String,   // 提交日（create_time 日期）
 }
 
 /// 日报内容字段
@@ -115,46 +123,70 @@ pub async fn get_reports(
         access_token
     );
 
-    let body = serde_json::json!({
-        "userid": user_id,
-        "template_name": template_name,
-        "start_time": start_time,
-        "end_time": end_time,
-        "cursor": 0,
-        "size": 100,
-    });
-
     let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("查询日志列表失败: {}", e))?;
 
-    if !resp.status().is_success() {
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("日志列表接口返回 HTTP {}: {}", status, text));
+    // 分页循环: 用 cursor 逐页拉取，直到 has_more=false
+    let mut all_items: Vec<ReportItem> = Vec::new();
+    let mut cursor: i64 = 0;
+
+    loop {
+        let body = serde_json::json!({
+            "userid": user_id,
+            "template_name": template_name,
+            "start_time": start_time,
+            "end_time": end_time,
+            "cursor": cursor,
+            "size": 100,
+        });
+
+        let resp = client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("查询日志列表失败: {}", e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("日志列表接口返回 HTTP {}: {}", status, text));
+        }
+
+        let result: serde_json::Value = resp.json().await.map_err(|e| {
+            format!("解析日志列表响应失败: {}", e)
+        })?;
+
+        log::info!(
+            "===== 日志列表 API 原始响应 (cursor={}) =====\n{}",
+            cursor,
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        );
+
+        // 检查钉钉错误码
+        let errcode = result["errcode"].as_i64().unwrap_or(-1);
+        if errcode != 0 {
+            let errmsg = result["errmsg"].as_str().unwrap_or("未知错误");
+            return Err(format!("钉钉 API 错误 (errcode={}): {}", errcode, errmsg));
+        }
+
+        let page_items = parse_report_items(&result);
+        let item_count = page_items.len();
+        all_items.extend(page_items);
+
+        let has_more = result["result"]["has_more"].as_bool().unwrap_or(false);
+        let next_cursor = result["result"]["next_cursor"].as_i64().unwrap_or(0);
+
+        log::info!("分页 cursor={}: 获取 {} 条, has_more={}, next_cursor={}",
+            cursor, item_count, has_more, next_cursor);
+
+        if !has_more {
+            break;
+        }
+        cursor = next_cursor;
     }
 
-    let result: serde_json::Value = resp.json().await.map_err(|e| {
-        format!("解析日志列表响应失败: {}", e)
-    })?;
-
-    log::debug!(
-        "日志列表原始响应: {}",
-        serde_json::to_string_pretty(&result).unwrap_or_default()
-    );
-
-    // 检查钉钉错误码
-    let errcode = result["errcode"].as_i64().unwrap_or(-1);
-    if errcode != 0 {
-        let errmsg = result["errmsg"].as_str().unwrap_or("未知错误");
-        return Err(format!("钉钉 API 错误 (errcode={}): {}", errcode, errmsg));
-    }
-
-    parse_report_list_response(&result)
+    log::info!("共拉取 {} 条日志记录", all_items.len());
+    Ok(group_items_to_stats(&all_items))
 }
 
 // ============================================================
@@ -207,68 +239,76 @@ fn parse_template_list_response(body: &serde_json::Value) -> Result<Vec<Template
     Ok(templates)
 }
 
-/// 解析日志列表 API 响应，按日期聚合为 ReportStat
-///
-/// 响应格式:
-/// ```json
-/// {
-///   "errcode": 0,
-///   "result": {
-///     "data_list": [
-///       {
-///         "create_time": 1605680704000,  // 毫秒时间戳
-///         "template_name": "日报",
-///         ...
-///       }
-///     ],
-///     "has_more": false
-///   }
-/// }
-/// ```
-fn parse_report_list_response(body: &serde_json::Value) -> Result<Vec<ReportStat>, String> {
+/// 解析日志列表 API 响应，返回每条日报的 ReportItem 列表
+fn parse_report_items(body: &serde_json::Value) -> Vec<ReportItem> {
     let data_list = body
         .get("result")
         .and_then(|r| r.get("data_list"))
         .and_then(|v| v.as_array())
-        .ok_or_else(|| {
-            format!(
-                "日志列表响应格式异常，缺少 result.data_list。原始响应: {}",
-                serde_json::to_string(body).unwrap_or_default()
-            )
-        })?;
+        .map(|a| a.clone())
+        .unwrap_or_default();
 
-    // 按日期分组统计
-    use std::collections::HashMap;
-    let mut date_map: HashMap<String, (i32, Vec<String>)> = HashMap::new();
-
+    let mut items = Vec::new();
     for item in data_list {
         let create_time_ms = item["create_time"].as_i64().unwrap_or(0);
         if create_time_ms == 0 {
             continue;
         }
+        let submit_date = timestamp_ms_to_date(create_time_ms);
+        let report_date = extract_reporting_date(&item)
+            .unwrap_or_else(|| submit_date.clone());
 
-        // 毫秒时间戳 → YYYY-MM-DD
-        let date_str = timestamp_ms_to_date(create_time_ms);
+        log::info!(
+            "日报映射: create_time={} → 汇报日={} → submit_date={}",
+            submit_date, report_date, submit_date
+        );
 
-        let entry = date_map.entry(date_str).or_insert((0, vec![]));
-        entry.0 += 1; // count
+        items.push(ReportItem {
+            report_date,
+            submit_date,
+        });
+    }
+
+    log::info!("成功解析 {} 条日志记录", items.len());
+    items
+}
+
+/// 将 ReportItem 列表按汇报日分组，聚合为 ReportStat
+fn group_items_to_stats(items: &[ReportItem]) -> Vec<ReportStat> {
+    use std::collections::HashMap;
+
+    // report_date → (count, has_same_day_submission)
+    let mut date_map: HashMap<String, (i32, bool, Vec<String>)> = HashMap::new();
+
+    for item in items {
+        let is_same_day = item.submit_date == item.report_date;
+        let entry = date_map.entry(item.report_date.clone()).or_insert((0, false, vec![]));
+        entry.0 += 1;
+        entry.1 = entry.1 || is_same_day; // 任一条是当天提交即为 true
     }
 
     let mut stats: Vec<ReportStat> = date_map
         .into_iter()
-        .map(|(date, (count, ids))| ReportStat {
+        .map(|(date, (count, has_same_day, ids))| ReportStat {
             stat_date: date,
             has_report: count > 0,
             report_count: count,
             report_ids: ids,
+            is_backfilled: !has_same_day, // 全部不是当天提交 → 补交
         })
         .collect();
 
-    // 按日期排序
     stats.sort_by(|a, b| a.stat_date.cmp(&b.stat_date));
 
-    log::info!("成功解析 {} 天的日志记录", stats.len());
-    Ok(stats)
+    log::info!(
+        "聚合为 {} 天的记录: {}",
+        stats.len(),
+        stats.iter()
+            .map(|s| format!("{} ({}/{})", s.stat_date, if s.is_backfilled { "补交" } else { "正常" }, s.report_count))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    stats
 }
 
 /// 获取指定日期的日报详细内容
@@ -613,6 +653,22 @@ async fn get_reports_raw(
     Ok(data_list)
 }
 
+/// 从日报 contents 中提取"汇报日"（日报时间/Reporting Time 字段的值）
+///
+/// 返回 `None` 表示该日报没有此字段，调用方应兜底使用 `create_time`
+fn extract_reporting_date(item: &serde_json::Value) -> Option<String> {
+    item["contents"]
+        .as_array()?
+        .iter()
+        .find(|c| {
+            let key = c["key"].as_str().unwrap_or("");
+            key.contains("日报时间") || key.contains("Reporting Time")
+        })
+        .and_then(|c| c["value"].as_str())
+        .map(|v| v.to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// 从单条日志记录中提取 ReportDetail
 fn extract_report_detail(item: &serde_json::Value) -> Option<ReportDetail> {
     let create_time = item["create_time"].as_i64()?;
@@ -743,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_report_list_success() {
+    fn test_parse_report_items_and_group() {
         let body = json!({
             "errcode": 0,
             "errmsg": "ok",
@@ -768,20 +824,60 @@ mod tests {
             }
         });
 
-        let stats = parse_report_list_response(&body).unwrap();
-        // 应该聚合成 2 天（6月1日和6月2日），6月2日有2篇
+        let items = parse_report_items(&body);
+        // 3 条日志
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].report_date, "2024-06-01");
+        assert_eq!(items[1].report_date, "2024-06-02");
+
+        let stats = group_items_to_stats(&items);
+        // 应聚合成 2 天（6月1日和6月2日），6月2日有2篇
         assert_eq!(stats.len(), 2);
-        // 按日期排序
         assert_eq!(stats[0].stat_date, "2024-06-01");
         assert!(stats[0].has_report);
         assert_eq!(stats[0].report_count, 1);
+        assert_eq!(stats[0].is_backfilled, false); // 无 contents，兜底用 create_time，同天
         assert_eq!(stats[1].stat_date, "2024-06-02");
         assert!(stats[1].has_report);
         assert_eq!(stats[1].report_count, 2);
     }
 
     #[test]
-    fn test_parse_report_list_empty() {
+    fn test_group_items_detects_backfill() {
+        // 补交场景：6/2 提交了一篇汇报日为 5/9 的日报
+        let items = vec![
+            ReportItem { report_date: "2026-05-09".into(), submit_date: "2026-06-02".into() },
+            ReportItem { report_date: "2026-06-02".into(), submit_date: "2026-06-02".into() },
+        ];
+        let stats = group_items_to_stats(&items);
+        assert_eq!(stats.len(), 2);
+
+        // 5/9: 仅一篇补交 → backfilled
+        let may9 = stats.iter().find(|s| s.stat_date == "2026-05-09").unwrap();
+        assert!(may9.has_report);
+        assert!(may9.is_backfilled);
+
+        // 6/2: 当天提交 → normal
+        let june2 = stats.iter().find(|s| s.stat_date == "2026-06-02").unwrap();
+        assert!(june2.has_report);
+        assert!(!june2.is_backfilled);
+    }
+
+    #[test]
+    fn test_group_items_mixed() {
+        // 混合：5/9 有一篇当天 + 一篇补交 → 不算补交
+        let items = vec![
+            ReportItem { report_date: "2026-05-09".into(), submit_date: "2026-05-09".into() },
+            ReportItem { report_date: "2026-05-09".into(), submit_date: "2026-06-02".into() },
+        ];
+        let stats = group_items_to_stats(&items);
+        assert_eq!(stats.len(), 1);
+        assert!(stats[0].has_report);
+        assert!(!stats[0].is_backfilled); // 有一篇当天提交 → 正常
+    }
+
+    #[test]
+    fn test_parse_report_items_empty() {
         let body = json!({
             "errcode": 0,
             "result": {
@@ -789,21 +885,19 @@ mod tests {
                 "has_more": false
             }
         });
-
-        let stats = parse_report_list_response(&body).unwrap();
-        assert!(stats.is_empty());
+        let items = parse_report_items(&body);
+        assert!(items.is_empty());
     }
 
     #[test]
-    fn test_parse_report_list_missing_result() {
+    fn test_parse_report_items_missing_result() {
         let body = json!({
             "errcode": 1,
             "errmsg": "invalid userid"
         });
-
-        let result = parse_report_list_response(&body);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("result.data_list"));
+        let items = parse_report_items(&body);
+        // parse_report_items 容错返回空列表（不再 panic）
+        assert!(items.is_empty());
     }
 
     #[test]
@@ -914,6 +1008,47 @@ mod tests {
         assert_eq!(fields[0].name, "今日完成工作");
         assert_eq!(default_receivers.len(), 2);
         assert_eq!(default_receivers[0], "manager001");
+    }
+
+    #[test]
+    fn test_extract_reporting_date_with_daily_time_field() {
+        let item = json!({
+            "create_time": 1717200000000u64,
+            "contents": [
+                { "key": "日报时间(Reporting Time)", "value": "2026-05-09" },
+                { "key": "工作内容(Working Content)", "value": "补填内容" },
+            ]
+        });
+        assert_eq!(extract_reporting_date(&item), Some("2026-05-09".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reporting_date_english_field() {
+        let item = json!({
+            "create_time": 1717200000000u64,
+            "contents": [
+                { "key": "Reporting Time", "value": "2026-06-15" },
+            ]
+        });
+        assert_eq!(extract_reporting_date(&item), Some("2026-06-15".to_string()));
+    }
+
+    #[test]
+    fn test_extract_reporting_date_fallback_to_create_time() {
+        // 无日报时间字段 → None，调用方兜底用 create_time
+        let item = json!({
+            "create_time": 1717200000000u64,
+            "contents": [
+                { "key": "工作内容", "value": "无日报时间字段" },
+            ]
+        });
+        assert_eq!(extract_reporting_date(&item), None);
+    }
+
+    #[test]
+    fn test_extract_reporting_date_no_contents() {
+        let item = json!({ "create_time": 1717200000000u64 });
+        assert_eq!(extract_reporting_date(&item), None);
     }
 
     #[test]

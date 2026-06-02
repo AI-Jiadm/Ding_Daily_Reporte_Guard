@@ -16,6 +16,7 @@ interface DayCellProps {
 
 const STATUS_LABELS: Record<string, string> = {
   submitted: "已写",
+  backfilled: "补交",
   missing: "缺失",
   warning: "待写",
   future: "",
@@ -43,6 +44,9 @@ export default function DayCell({ day, isSelected, onClick }: DayCellProps) {
     cellStyle.border = "1px solid rgba(255,59,48,0.25)";
   } else if (status === "submitted") {
     cellStyle.background = "var(--color-success-light)";
+  } else if (status === "backfilled") {
+    cellStyle.background = "#fffbe6";  // 淡黄色背景
+    cellStyle.border = "1px solid rgba(250,219,20,0.4)";
   } else if (status === "warning") {
     cellStyle.background = "var(--color-warning-light)";
     cellStyle.border = "1px solid rgba(255,149,0,0.3)";
@@ -50,16 +54,18 @@ export default function DayCell({ day, isSelected, onClick }: DayCellProps) {
 
   const numStyle: React.CSSProperties = {
     ...num,
-    fontWeight: (status === "missing" || status === "warning") ? 700 : 500,
+    fontWeight: (status === "missing" || status === "warning" || status === "backfilled") ? 700 : 500,
     color: isDim
       ? "var(--color-text-tertiary)"
       : status === "missing"
         ? "var(--color-danger)"
         : status === "submitted"
           ? "var(--color-success)"
-          : status === "warning"
-            ? "var(--color-warning)"
-            : "var(--color-text)",
+          : status === "backfilled"
+            ? "#d4a017"
+            : status === "warning"
+              ? "var(--color-warning)"
+              : "var(--color-text)",
   };
 
   return (
@@ -72,12 +78,15 @@ export default function DayCell({ day, isSelected, onClick }: DayCellProps) {
       {status === "missing" && <div style={bar} />}
       {/* 今天待写标记: 底部橙条 */}
       {status === "warning" && <div style={{ ...bar, background: "var(--color-warning)" }} />}
+      {/* 补交标记: 底部黄条 */}
+      {status === "backfilled" && <div style={{ ...bar, background: "#fad314" }} />}
 
       <span style={numStyle}>{dayNum}</span>
 
       {/* 状态文字缩写 */}
       {status === "missing" && <span style={label}>缺失</span>}
       {status === "warning" && <span style={{ ...label, color: "var(--color-warning)" }}>待写</span>}
+      {status === "backfilled" && <span style={{ ...label, color: "#b8860b" }}>补交</span>}
       {status === "submitted" && <span style={{ ...label, color: "var(--color-success)" }}>✓</span>}
     </div>
   );

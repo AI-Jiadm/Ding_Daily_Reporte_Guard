@@ -23,6 +23,7 @@ interface DayDetailProps { day: DayInfo; onClose: () => void; onSubmitted?: () =
 
 const STATUS_INFO: Record<string, { title: string; bg: string; fg: string }> = {
   submitted: { title: "已提交", bg: "var(--color-success-light)", fg: "var(--color-success)" },
+  backfilled: { title: "补交", bg: "#fffbe6", fg: "#b8860b" },
   missing: { title: "缺失", bg: "var(--color-danger-light)", fg: "var(--color-danger)" },
   warning: { title: "待提交", bg: "var(--color-warning-light)", fg: "var(--color-warning)" },
   future: { title: "未来", bg: "var(--color-surface-secondary)", fg: "var(--color-text-tertiary)" },
@@ -64,7 +65,7 @@ const fieldPriority = (key: string): number => {
 export default function DayDetail({ day, onClose, onSubmitted }: DayDetailProps) {
   const info = STATUS_INFO[day.status] || STATUS_INFO.future;
   const isMissing = day.status === "missing" || day.status === "warning";
-  const isSubmitted = day.status === "submitted";
+  const isSubmitted = day.status === "submitted" || day.status === "backfilled";
 
   // ---- 只读模式 state ----
   const [loading, setLoading] = useState(false);

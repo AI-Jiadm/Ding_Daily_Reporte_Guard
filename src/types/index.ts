@@ -5,6 +5,7 @@
 /** 每日日报状态 */
 export type DayStatus =
   | "submitted"   // 已提交 ✅
+  | "backfilled"  // 补交 🟡（汇报日 ≠ 提交日）
   | "missing"     // 缺失 ❌
   | "warning"     // 今日预警 ⚠️
   | "future"      // 未来日期
