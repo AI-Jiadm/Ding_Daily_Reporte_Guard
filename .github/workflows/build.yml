@@ -23,9 +23,6 @@ jobs:
         with:
           toolchain: stable
 
-      - name: Install WiX Toolset (for MSI)
-        run: choco install wixtoolset -y --version=3.11.2
-
       - name: Install npm dependencies
         run: npm ci
 
