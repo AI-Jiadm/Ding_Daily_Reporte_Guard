@@ -1,6 +1,7 @@
 use crate::AppState;
 use crate::engine::checker;
 use crate::holiday;
+use crate::{set_tray_alert, set_tray_normal};
 use chrono::{Datelike, Local};
 use serde_json::json;
 use tauri::State;
@@ -12,6 +13,7 @@ use tauri::State;
 /// 手动触发一次全量检查（可指定月份）
 #[tauri::command]
 pub async fn run_check(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     month: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -85,6 +87,14 @@ pub async fn run_check(
         .collect();
 
     state.db.update_daily_status(&records)?;
+
+    // 根据是否有缺失切换托盘图标
+    let has_missing = day_results.iter().any(|d| d.status == "missing");
+    if has_missing {
+        set_tray_alert(&app);
+    } else {
+        set_tray_normal(&app);
+    }
 
     // 返回给前端
     Ok(json!({
