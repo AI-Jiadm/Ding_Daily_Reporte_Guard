@@ -6,9 +6,8 @@ body:
     id: version
     attributes:
       label: 版本号
-      placeholder: 如 v0.1.0
-    validations:
-      required: true
+      description: 可在应用内「设置」面板底部查看
+      placeholder: 如 v1.0.1
 
   - type: dropdown
     id: os

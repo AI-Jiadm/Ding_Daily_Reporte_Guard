@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import type { AppConfig, Template } from "../types";
 import UserLookupModal from "./UserLookupModal";
 
@@ -27,8 +28,13 @@ export default function SettingsModal({ onClose, config, templateName }: Setting
   const [showLookup, setShowLookup] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [appVersion, setAppVersion] = useState("");
 
   const mask = (s: string) => s.length <= 8 ? "••••••••" : s.slice(0, 4) + "••••••••" + s.slice(-4);
+
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => {});
+  }, []);
 
   const handleFetch = async () => {
     setFetching(true); setMsg(null);
@@ -117,6 +123,10 @@ export default function SettingsModal({ onClose, config, templateName }: Setting
             <div style={{...s.msg, background: msg.ok ? "var(--color-success-light)" : "var(--color-danger-light)", color: msg.ok ? "var(--color-success)" : "var(--color-danger)" }}>
               {msg.text}
             </div>
+          )}
+
+          {appVersion && (
+            <div style={s.version}>版本 v{appVersion}</div>
           )}
         </div>
 
@@ -226,6 +236,7 @@ const s: Record<string, React.CSSProperties> = {
   footer: { display: "flex", justifyContent: "flex-end", gap: 12, padding: "12px 24px 20px", borderTop: "1px solid var(--color-separator)" },
   btnCancel: { padding: "8px 18px", background: "var(--color-surface-secondary)", color: "var(--color-text)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)", fontSize: 13, cursor: "pointer" },
   btnSave: { padding: "8px 18px", background: "var(--color-primary)", color: "#fff", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  version: { textAlign: "center", fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 16 },
   lookupBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, padding: 0, background: "var(--color-surface-secondary)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)", cursor: "pointer", color: "var(--color-text-secondary)", flexShrink: 0 },
   btnReset: { padding: "6px 12px", background: "transparent", color: "var(--color-danger, #ff4d4f)", border: "none", borderRadius: "var(--radius-sm)", fontSize: 12, cursor: "pointer", textDecoration: "underline" },
   resetOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1200 },
