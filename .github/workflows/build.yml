@@ -7,9 +7,9 @@ on:
 
 jobs:
   # ============================================================
-  # macOS Apple Silicon (arm64)
+  # macOS (Apple Silicon, arm64)
   # ============================================================
-  build-macos-arm64:
+  build-macos:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,40 +35,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dailyreport-guard-macos-arm64
-          path: src-tauri/target/release/bundle/dmg/*.dmg
-          if-no-files-found: error
-
-  # ============================================================
-  # macOS Intel (x86_64)
-  # ============================================================
-  build-macos-x64:
-    runs-on: macos-13
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: stable
-          targets: x86_64-apple-darwin
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build Tauri app
-        run: npx tauri build --ci --bundles dmg
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: dailyreport-guard-macos-x64
+          name: dailyreport-guard-macos
           path: src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error
 
@@ -108,7 +75,7 @@ jobs:
   # 创建 GitHub Release（等待所有构建完成）
   # ============================================================
   create-release:
-    needs: [build-macos-arm64, build-macos-x64, build-windows]
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write
