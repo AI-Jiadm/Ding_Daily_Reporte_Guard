@@ -32,5 +32,8 @@ jobs:
       - name: TypeScript check
         run: npx tsc --noEmit
 
+      - name: Build frontend
+        run: npm run build
+
       - name: Cargo check
         run: cargo check --manifest-path src-tauri/Cargo.toml
