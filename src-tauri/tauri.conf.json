@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicedoc/tauri/dev/crates/tauri-config-schema/schema.json",
   "productName": "日报守卫",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "identifier": "com.dailyreport.guard",
   "build": {
     "beforeDevCommand": "npm run dev",
