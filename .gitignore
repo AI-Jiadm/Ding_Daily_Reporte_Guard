@@ -14,3 +14,6 @@ src-tauri/target/
 .idea/
 *.swp
 *.swo
+
+# Claude
+.claude/settings.local.json
