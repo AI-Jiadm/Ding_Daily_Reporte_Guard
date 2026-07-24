@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 钉钉开放平台文档
+    url: https://open.dingtalk.com/document/
+    about: 关于钉钉 API 配置的问题，请先查阅官方文档

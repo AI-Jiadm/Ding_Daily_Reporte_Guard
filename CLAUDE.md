@@ -74,3 +74,95 @@ npx tauri build
 - 提交前 `npx tsc --noEmit` 零错误 + `cargo check --manifest-path src-tauri/Cargo.toml` 零错误
 - 所有钉钉 API 调用必须有重试逻辑；网络请求必须有超时
 - 不在日志中打印完整 `app_secret`
+
+## Issue 解决工作流
+
+当用户说"解决 issue #N"或"修复 issue #N"时，严格遵循以下流程。
+
+### 1. 读取 Issue
+
+```bash
+gh issue view <N> --json title,body,labels,comments
+```
+
+理解问题描述、复现步骤、预期结果。如果 issue 信息不足，通过 `gh issue comment` 追问。
+
+### 2. 认领并开始
+
+在开始修复前，必须在 issue 下回复认领：
+
+```bash
+gh issue comment <N> --body "> 开始处理此问题，正在分析中..."
+```
+
+### 3. 创建修复分支
+
+分支命名规范：`fix/issue-<N>-<简短描述>`
+
+```bash
+git checkout -b fix/issue-<N>-<描述>
+```
+
+### 4. 诊断与修复
+
+- Bug → 调用 `diagnose` skill（reproduce → minimise → hypothesise → instrument → fix）
+- 新功能 → 调用 `grill-me` + `tauri-v2` skill
+- 核心逻辑改动 → 调用 `tdd` skill
+
+### 5. 编译验证
+
+```bash
+npx tsc --noEmit && cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+必须零错误。
+
+### 6. 提交并创建 PR
+
+```bash
+git add -A
+git commit -m "fix: <简短描述> (closes #<N>)"
+git push origin fix/issue-<N>-<描述>
+```
+
+然后用 `gh pr create` 创建 PR：
+
+```bash
+gh pr create \
+  --title "<描述> (fixes #<N>)" \
+  --body "$(cat <<'EOF'
+## 修复内容
+
+<具体改了什么、为什么这样改>
+
+## 关联 Issue
+
+Closes #<N>
+
+## 验证
+
+- [ ] npx tsc --noEmit 通过
+- [ ] cargo check 通过
+EOF
+)"
+```
+
+### 7. 评论修复完成
+
+PR 创建后，在 issue 下回复：
+
+```bash
+gh issue comment <N> --body "> 已提交修复 PR: $(gh pr view --json url -q .url)
+
+**修复方案：**
+
+<简要说明修复思路和改动点>
+
+请查看 PR 了解详情。"
+```
+
+### 注意事项
+
+- 所有 `gh` 命令都通过 Bash tool 执行
+- 如果 `gh auth status` 失败，提示用户先执行 `gh auth login`
+- 修复完成后调用 `verify` skill 确认改动生效

@@ -1,0 +1,73 @@
+name: 缺陷报告
+description: 报告应用中的 bug 或异常行为
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本号
+      placeholder: 如 v0.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: 操作系统
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Windows
+    validations:
+      required: true
+
+  - type: dropdown
+    id: module
+    attributes:
+      label: 出问题的功能模块
+      options:
+        - 日报检查
+        - 日历展示
+        - 配置 / 初始化
+        - 工作通知
+        - 托盘
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: date
+    attributes:
+      label: 涉及日期
+      description: 如果问题与特定日期相关，请填写（如 2026-07-24）
+      placeholder: 选填
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开应用
+        2. 点击 ...
+        3. 观察到错误
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      placeholder: 描述正常情况下应该发生什么
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+      placeholder: 描述实际发生了什么
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 补充信息
+      description: 截图、日志等（可拖拽文件到此处）
+      placeholder: 选填

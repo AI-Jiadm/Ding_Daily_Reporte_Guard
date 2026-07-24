@@ -243,6 +243,18 @@ ding-daily-report/
 - **chrono**: 0.4.x（使用 `Datelike`、`Timelike` traits）
 - **rusqlite**: 0.31.x（bundled feature）
 
+### GitHub Issue 解决工作流
+
+当被要求解决某个 GitHub Issue 时，遵循以下流程（详细步骤见 `CLAUDE.md`）：
+
+1. **读取** — `gh issue view <N> --json ...` 获取完整信息
+2. **认领** — `gh issue comment <N> --body "开始处理..."` 回复 issue
+3. **分支** — `fix/issue-<N>-<描述>` 创建修复分支
+4. **修复** — 调用 `diagnose`（Bug）或 `grill-me`（新功能）+ `tdd`（核心逻辑）
+5. **验证** — `npx tsc --noEmit` + `cargo check` 零错误
+6. **提 PR** — `gh pr create` 关联 issue，描述修复方案
+7. **通知** — `gh issue comment <N>` 回复修复完成，附 PR 链接和方案说明
+
 ### 已知未完成项（技术债）
 
 以下功能框架已搭建但需要后续完善，开发时应优先补齐：
