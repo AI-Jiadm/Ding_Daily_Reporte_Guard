@@ -29,24 +29,28 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build frontend
-        run: npm run build
-
-      - name: Build Rust (host = arm64)
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+      - name: Build Tauri app (arm64)
+        run: npx tauri build --ci --bundles dmg
 
       - name: Build Rust (Intel x86_64)
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
 
-      - name: Create universal binary
+      - name: Replace binary with universal
         run: |
           lipo -create \
             src-tauri/target/release/dailyreport-guard \
             src-tauri/target/x86_64-apple-darwin/release/dailyreport-guard \
-            -output src-tauri/target/release/dailyreport-guard
+            -output src-tauri/target/release/bundle/macos/日报守卫.app/Contents/MacOS/dailyreport-guard
 
-      - name: Bundle dmg (cargo 跳过，直接打包 universal binary)
-        run: npx tauri build --ci --bundles dmg
+      - name: Re-create universal dmg
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          rm -f src-tauri/target/release/bundle/dmg/*.dmg
+          hdiutil create \
+            -volname "日报守卫" \
+            -srcfolder src-tauri/target/release/bundle/macos/日报守卫.app \
+            -ov -format UDZO \
+            "src-tauri/target/release/bundle/dmg/日报守卫_${VERSION}_universal.dmg"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
