@@ -29,23 +29,26 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Build Tauri app (arm64)
+      - name: Build Tauri app (arm64 dmg)
         run: npx tauri build --ci --bundles dmg
 
       - name: Build Rust (Intel x86_64)
         run: cargo build --release --manifest-path src-tauri/Cargo.toml --target x86_64-apple-darwin
 
-      - name: Replace binary with universal
+      - name: Mount dmg and rebuild with universal binary
         run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          hdiutil attach "$DMG" -mountpoint /tmp/dmg_mount -nobrowse -quiet
+          cp -R /tmp/dmg_mount/日报守卫.app src-tauri/target/release/bundle/macos/
+          hdiutil detach /tmp/dmg_mount -quiet
+          # 替换为 universal binary
           lipo -create \
             src-tauri/target/release/dailyreport-guard \
             src-tauri/target/x86_64-apple-darwin/release/dailyreport-guard \
             -output src-tauri/target/release/bundle/macos/日报守卫.app/Contents/MacOS/dailyreport-guard
-
-      - name: Re-create universal dmg
-        run: |
+          # 重新打包 universal dmg
           VERSION=$(node -p "require('./package.json').version")
-          rm -f src-tauri/target/release/bundle/dmg/*.dmg
+          rm -f "$DMG"
           hdiutil create \
             -volname "日报守卫" \
             -srcfolder src-tauri/target/release/bundle/macos/日报守卫.app \
