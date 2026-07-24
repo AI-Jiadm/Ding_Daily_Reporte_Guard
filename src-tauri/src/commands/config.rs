@@ -203,6 +203,68 @@ pub async fn save_settings_and_restart(
     app.restart();
 }
 
+/// 通过手机号查询钉钉 UserID
+///
+/// app_key / app_secret 可选：SetupWizard 中凭据尚未保存到数据库，需由前端传入；
+/// SettingsModal 中凭据已保存，可从数据库自动读取。
+#[tauri::command]
+pub async fn lookup_userid(
+    state: State<'_, AppState>,
+    mobile: String,
+    app_key: Option<String>,
+    app_secret: Option<String>,
+) -> Result<serde_json::Value, String> {
+    // 优先使用前端传入的凭据（SetupWizard 场景），否则从数据库读取（SettingsModal 场景）
+    let key = match app_key.filter(|k| !k.is_empty()) {
+        Some(k) => k,
+        None => state
+            .db
+            .get_config("app_key")?
+            .ok_or("AppKey 未配置，请先填写 AppKey 和 AppSecret")?,
+    };
+    let secret = match app_secret.filter(|s| !s.is_empty()) {
+        Some(s) => s,
+        None => state
+            .db
+            .get_config("app_secret")?
+            .ok_or("AppSecret 未配置，请先填写 AppKey 和 AppSecret")?,
+    };
+
+    state
+        .token_cache
+        .set_credentials(key, secret)
+        .await;
+
+    let result =
+        crate::dingtalk::user::get_userid_by_mobile(&state.token_cache, &mobile.trim()).await?;
+
+    // 合并所有 userid 返回给前端
+    let mut all_ids: Vec<String> = Vec::new();
+    if let Some(ref uid) = result.userid {
+        all_ids.push(uid.clone());
+    }
+    if let Some(ref list) = result.exclusive_account_userid_list {
+        for id in list {
+            if !all_ids.contains(id) {
+                all_ids.push(id.clone());
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "userIds": all_ids,
+        "primary": result.userid,
+    }))
+}
+
+/// 重置所有配置，回到初始化向导
+#[tauri::command]
+pub async fn reset_config(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    state.db.clear_all_config()?;
+    log::info!("配置已重置，即将重启...");
+    app.restart();
+}
+
 // ============================================================
 // 节假日同步 Commands
 // ============================================================

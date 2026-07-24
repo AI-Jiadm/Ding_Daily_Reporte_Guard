@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { AppConfig, Template } from "../types";
+import UserLookupModal from "./UserLookupModal";
 
 // ============================================================
 // 设置面板 (CC Switch 风格)
@@ -23,6 +24,9 @@ export default function SettingsModal({ onClose, config, templateName }: Setting
   const [fetching, setFetching] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [showLookup, setShowLookup] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const mask = (s: string) => s.length <= 8 ? "••••••••" : s.slice(0, 4) + "••••••••" + s.slice(-4);
 
@@ -73,7 +77,25 @@ export default function SettingsModal({ onClose, config, templateName }: Setting
             </div>
           </Field>
           <Field label="钉钉 UserID">
-            <input style={i} value={userId} onChange={e => setUserId(e.target.value)} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <input style={{...i, flex: 1}} value={userId} onChange={e => setUserId(e.target.value)} />
+              <button
+                style={s.lookupBtn}
+                title="通过手机号查询 UserID"
+                onClick={() => {
+                  if (!appKey.trim() || !appSecret.trim()) {
+                    setMsg({ text: "请先填写 AppKey 和 AppSecret", ok: false });
+                    return;
+                  }
+                  setShowLookup(true);
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="11" cy="11" r="8" />
+                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                </svg>
+              </button>
+            </div>
           </Field>
           <Field label="日志模板">
             {selName ? <div style={s.curTpl}>当前: <b>{selName}</b></div> : <div style={s.noTpl}>未选择</div>}
@@ -99,11 +121,81 @@ export default function SettingsModal({ onClose, config, templateName }: Setting
         </div>
 
         <div style={s.footer}>
+          <button
+            style={s.btnReset}
+            onClick={() => setShowResetConfirm(true)}
+          >
+            重置配置
+          </button>
+          <div style={{ flex: 1 }} />
           <button style={s.btnCancel} onClick={onClose}>取消</button>
           <button style={{...s.btnSave, opacity: saving ? 0.5 : 1}} onClick={handleSave} disabled={saving}>
             {saving ? "保存中..." : "保存并重启"}
           </button>
         </div>
+
+        {showLookup && (
+          <UserLookupModal
+            onClose={() => setShowLookup(false)}
+            onSelect={(id) => {
+              setUserId(id);
+              setShowLookup(false);
+            }}
+          />
+        )}
+
+        {/* 重置确认弹窗 */}
+        {showResetConfirm && (
+          <div style={s.resetOverlay} onClick={() => setShowResetConfirm(false)}>
+            <div style={s.resetDialog} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ margin: "0 0 12px", fontSize: 16, color: "#ff4d4f" }}>
+                ⚠️ 重置所有配置
+              </h3>
+              <div style={{ fontSize: 14, color: "#333", lineHeight: 1.8, marginBottom: 20 }}>
+                <p style={{ margin: "0 0 12px" }}>
+                  此操作将<strong>清除所有已保存的配置</strong>，包括：
+                </p>
+                <ul style={{ margin: "0 0 12px", paddingLeft: 20 }}>
+                  <li>AppKey 和 AppSecret</li>
+                  <li>钉钉 UserID</li>
+                  <li>日报模板选择</li>
+                </ul>
+                <p style={{ margin: 0, color: "#999" }}>
+                  应用将自动重启，并回到首次使用的初始化页面。
+                </p>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+                <button
+                  style={s.btnCancel}
+                  onClick={() => setShowResetConfirm(false)}
+                  disabled={resetting}
+                >
+                  取消
+                </button>
+                <button
+                  style={{
+                    ...s.btnSave,
+                    background: "#ff4d4f",
+                    opacity: resetting ? 0.5 : 1,
+                  }}
+                  onClick={async () => {
+                    setResetting(true);
+                    try {
+                      await invoke("reset_config");
+                    } catch (e) {
+                      setMsg({ text: `重置失败: ${e}`, ok: false });
+                      setResetting(false);
+                      setShowResetConfirm(false);
+                    }
+                  }}
+                  disabled={resetting}
+                >
+                  {resetting ? "重置中..." : "确认重置"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -134,4 +226,8 @@ const s: Record<string, React.CSSProperties> = {
   footer: { display: "flex", justifyContent: "flex-end", gap: 12, padding: "12px 24px 20px", borderTop: "1px solid var(--color-separator)" },
   btnCancel: { padding: "8px 18px", background: "var(--color-surface-secondary)", color: "var(--color-text)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)", fontSize: 13, cursor: "pointer" },
   btnSave: { padding: "8px 18px", background: "var(--color-primary)", color: "#fff", borderRadius: "var(--radius-sm)", fontSize: 13, fontWeight: 600, cursor: "pointer" },
+  lookupBtn: { display: "flex", alignItems: "center", justifyContent: "center", width: 40, height: 40, padding: 0, background: "var(--color-surface-secondary)", border: "1px solid var(--color-border)", borderRadius: "var(--radius-sm)", cursor: "pointer", color: "var(--color-text-secondary)", flexShrink: 0 },
+  btnReset: { padding: "6px 12px", background: "transparent", color: "var(--color-danger, #ff4d4f)", border: "none", borderRadius: "var(--radius-sm)", fontSize: 12, cursor: "pointer", textDecoration: "underline" },
+  resetOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.3)", display: "flex", justifyContent: "center", alignItems: "center", zIndex: 1200 },
+  resetDialog: { background: "#fff", borderRadius: 12, padding: 24, maxWidth: 400, width: "90%", boxShadow: "0 4px 20px rgba(0,0,0,0.15)" },
 };

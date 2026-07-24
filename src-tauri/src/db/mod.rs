@@ -116,6 +116,15 @@ impl Database {
         }
     }
 
+    /// 清空所有配置（用于重置应用，回到初始化向导）
+    pub fn clear_all_config(&self) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("锁定数据库失败: {}", e))?;
+        conn.execute("DELETE FROM config", [])
+            .map_err(|e| format!("清空配置失败: {}", e))?;
+        log::info!("所有配置已清空");
+        Ok(())
+    }
+
     // =====================================================
     // 每日状态读写
     // =====================================================

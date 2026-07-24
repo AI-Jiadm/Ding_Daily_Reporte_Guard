@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useAppState } from "../context/AppContext";
 import type { Template, AppConfig } from "../types";
 import { invoke } from "@tauri-apps/api/core";
+import UserLookupModal from "../components/UserLookupModal";
 
 // ============================================================
 // 首次配置向导
@@ -26,6 +27,7 @@ export default function SetupWizard() {
   const [templates, setTemplates] = useState<Template[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+  const [showLookup, setShowLookup] = useState(false);
 
   // 启动时尝试加载已保存的凭证，避免重复输入
   useEffect(() => {
@@ -176,13 +178,43 @@ export default function SetupWizard() {
 
             <div style={styles.field}>
               <label style={styles.label}>钉钉 UserID</label>
-              <input
-                style={styles.input}
-                type="text"
-                placeholder="你的钉钉 UserID（可从钉钉管理后台查看）"
-                value={userId}
-                onChange={(e) => setUserId(e.target.value)}
-              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  style={{ ...styles.input, flex: 1 }}
+                  type="text"
+                  placeholder="你的钉钉 UserID（可从钉钉管理后台查看）"
+                  value={userId}
+                  onChange={(e) => setUserId(e.target.value)}
+                />
+                <button
+                  style={styles.lookupBtn}
+                  title="通过手机号查询 UserID"
+                  onClick={() => {
+                    if (!appKey.trim() || !appSecret.trim()) {
+                      setTestResult({
+                        success: false,
+                        message: "请先填写 AppKey 和 AppSecret",
+                      });
+                      return;
+                    }
+                    setShowLookup(true);
+                  }}
+                >
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <circle cx="11" cy="11" r="8" />
+                    <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                  </svg>
+                </button>
+              </div>
               <span style={styles.hint}>
                 在钉钉PC端 → 头像 → 设置 → 个人信息 中可以找到
               </span>
@@ -324,6 +356,21 @@ export default function SetupWizard() {
           </div>
         )}
       </div>
+
+      {showLookup && (
+        <UserLookupModal
+          appKey={appKey.trim()}
+          appSecret={appSecret.trim()}
+          onClose={() => setShowLookup(false)}
+          onSelect={(id) => {
+            setUserId(id);
+            setTestResult({
+              success: true,
+              message: `查询成功，已填入 UserID: ${id}`,
+            });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -380,6 +427,20 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 6,
     fontSize: 14,
     outline: "none",
+  },
+  lookupBtn: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 40,
+    height: 40,
+    padding: 0,
+    background: "#f5f5f5",
+    border: "1px solid #d9d9d9",
+    borderRadius: 6,
+    cursor: "pointer",
+    color: "#666",
+    flexShrink: 0,
   },
   hint: { display: "block", marginTop: 4, fontSize: 12, color: "#999" },
   alert: {
