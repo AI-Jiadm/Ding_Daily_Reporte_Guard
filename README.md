@@ -2,6 +2,15 @@
 
 防止钉钉日报漏写被扣钱的 macOS 桌面应用。对接钉钉开放平台 API，自动检查当月工作日日报提交状态，发现缺失时通过钉钉工作通知提醒。
 
+## 📸 截图预览
+
+| 配置向导 | 主日历页面 |
+|:---:|:---:|
+| ![配置向导](docs/images/setup-wizard.png) | ![主日历页面](docs/images/calendar-view.png) |
+| *首次使用时输入 AppKey/AppSecret/UserID，选择日报模板* | *月历视图，颜色标记日报提交状态* |
+
+> 💡 截图请放到 `docs/images/` 目录下，命名为 `setup-wizard.png` 和 `calendar-view.png`。
+
 ## 技术栈
 
 | 层 | 技术 |
